@@ -135,12 +135,15 @@ static struct bpf_map *dev_map_alloc(union bpf_attr *attr)
 	dtab->map.pages = round_up(cost, PAGE_SIZE) >> PAGE_SHIFT;
 
 	if (attr->map_type == BPF_MAP_TYPE_DEVMAP_HASH) {
-		dtab->n_buckets = roundup_pow_of_two(dtab->map.max_entries);
-
-		if (!dtab->n_buckets) { /* Overflow check */
+		/* hash table size must be power of 2; roundup_pow_of_two() can
+		 * overflow into UB on 32-bit arches, so check that first
+		 */
+		if (dtab->map.max_entries > 1UL << 31) {
 			err = -EINVAL;
 			goto free_dtab;
 		}
+
+		dtab->n_buckets = roundup_pow_of_two(dtab->map.max_entries);
 		cost += sizeof(struct hlist_head) * dtab->n_buckets;
 	}
 
