@@ -2324,6 +2324,13 @@ static int bpf_skb_net_grow(struct sk_buff *skb, u32 len_diff)
 		/* Header must be checked, and gso_segs recomputed. */
 		skb_shinfo(skb)->gso_type |= SKB_GSO_DODGY;
 		skb_shinfo(skb)->gso_segs = 0;
+
+		/* There is a BUG_ON() when segmenting the frag_list with
+		 * head_frag true, so linearize the skb after downgrading
+		 * the MSS.
+		 */
+		if (skb_shinfo(skb)->frag_list)
+			return skb_linearize(skb);
 	}
 
 	return 0;
