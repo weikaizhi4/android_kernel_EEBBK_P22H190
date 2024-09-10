@@ -314,6 +314,10 @@ static struct bpf_map *htab_map_alloc(union bpf_attr *attr)
 		 */
 		goto free_htab;
 
+	/* percpu map value size is bound by PCPU_MIN_UNIT_SIZE */
+	if (percpu && round_up(htab->map.value_size, 8) > PCPU_MIN_UNIT_SIZE)
+		goto free_htab;
+
 	htab->elem_size = sizeof(struct htab_elem) +
 			  round_up(htab->map.key_size, 8);
 	if (percpu)

@@ -76,6 +76,10 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 		 */
 		return ERR_PTR(-E2BIG);
 
+	/* percpu map value size is bound by PCPU_MIN_UNIT_SIZE */
+	if (percpu && round_up(attr->value_size, 8) > PCPU_MIN_UNIT_SIZE)
+		return ERR_PTR(-E2BIG);
+
 	elem_size = round_up(attr->value_size, 8);
 
 	max_entries = attr->max_entries;
