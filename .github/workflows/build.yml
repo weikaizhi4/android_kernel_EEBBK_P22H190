@@ -1,4 +1,4 @@
-name: Build P22H190 kernel
+name: Build P22H190 recovery upgrade
 
 on:
   workflow_dispatch:
@@ -119,7 +119,7 @@ jobs:
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$ANYKERNEL_DIR"
           test -f "$ANYKERNEL_DIR/anykernel.sh"
 
-      - name: Build kernel, modules, AnyKernel3 and socko
+      - name: Build recovery upgrade package
         shell: bash
         run: |
           set -o pipefail
@@ -136,24 +136,16 @@ jobs:
             ./scripts/build-p22h190.sh all 2>&1 | tee out/build.log
           test "${PIPESTATUS[0]}" -eq 0
 
-      - name: Verify release outputs
+      - name: Verify recovery upgrade package
         shell: bash
         run: |
           set -euo pipefail
           ls -lh "$RELEASE_DIR"
-          test -s "$RELEASE_DIR/socko.img"
-          test -n "$(find "$RELEASE_DIR" -maxdepth 1 -name 'AnyKernel3-P22H190-*.zip' -size +1c -print -quit)"
-          sha256sum "$RELEASE_DIR"/*.img "$RELEASE_DIR"/*.zip | tee "$RELEASE_DIR/SHA256SUMS"
-
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: p22h190-${{ inputs.profile || 'standard' }}-build-log-${{ github.sha }}
-          path: |
-            out/build.log
-            out/clang-version.txt
-          if-no-files-found: warn
+          package=$(find "$RELEASE_DIR" -maxdepth 1 -type f \
+            -name 'P22H190-recovery-*.zip' -size +1c -print -quit)
+          test -n "$package"
+          test "$(find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 1
+          sha256sum "$package"
 
       - name: Upload build package artifact
         if: always()
@@ -161,9 +153,7 @@ jobs:
         with:
           name: p22h190-${{ inputs.profile || 'standard' }}-packages-${{ github.sha }}
           path: |
-            out/release*/*.zip
-            out/release*/*.img
-            out/release*/SHA256SUMS
+            out/release*/P22H190-recovery-*.zip
           if-no-files-found: warn
           compression-level: 0
 
@@ -176,6 +166,4 @@ jobs:
           prerelease: true
           generate_release_notes: false
           files: |
-            out/release*/*.zip
-            out/release*/*.img
-            out/release*/SHA256SUMS
+            out/release*/P22H190-recovery-*.zip

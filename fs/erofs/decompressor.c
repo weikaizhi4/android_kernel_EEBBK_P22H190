@@ -160,19 +160,28 @@ static int lz4_decompress(struct z_erofs_decompress_req *rq, u8 *out)
 		}
 	}
 
-	ret = LZ4_decompress_safe_partial(src + inputmargin, out,
-					  inlen, rq->outputsize,
-					  rq->outputsize);
-	if (ret < 0) {
-		errln("%s, failed to decompress, in[%p, %u, %u] out[%p, %u]",
-		      __func__, src + inputmargin, inlen, inputmargin,
-		      out, rq->outputsize);
+	/* Legacy images may contain extra data in a pcluster. */
+	if (rq->partial_decoding || !support_0padding)
+		ret = LZ4_decompress_safe_partial(src + inputmargin, out,
+						  inlen, rq->outputsize,
+						  rq->outputsize);
+	else
+		ret = LZ4_decompress_safe(src + inputmargin, out,
+					   inlen, rq->outputsize);
+
+	if (ret != rq->outputsize) {
+		errln("%s, failed to decompress %d in[%u, %u] out[%u]",
+		      __func__, ret, inlen, inputmargin, rq->outputsize);
 		WARN_ON(1);
 		print_hex_dump(KERN_DEBUG, "[ in]: ", DUMP_PREFIX_OFFSET,
 			       16, 1, src + inputmargin, inlen, true);
 		print_hex_dump(KERN_DEBUG, "[out]: ", DUMP_PREFIX_OFFSET,
 			       16, 1, out, rq->outputsize, true);
+		if (ret >= 0 && ret < rq->outputsize)
+			memset(out + ret, 0, rq->outputsize - ret);
 		ret = -EIO;
+	} else {
+		ret = 0;
 	}
 
 	if (copied)

@@ -1,0 +1,56 @@
+### EEBBK P22H190 recovery kernel installer
+### Boot-image handling is provided by the bundled AnyKernel3 tools.
+
+properties() { '
+kernel.string=EEBBK P22H190 @KERNEL_RELEASE@
+do.devicecheck=0
+do.modules=0
+do.systemless=0
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=
+device.name2=
+device.name3=
+device.name4=
+device.name5=
+supported.versions=
+supported.patchlevels=
+supported.vendorpatchlevels=
+'; }
+
+BLOCK=boot;
+IS_SLOT_DEVICE=auto;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+# This installer replaces only the kernel payload in the current boot image.
+NO_MAGISK_CHECK=1;
+
+. tools/ak3-core.sh;
+
+ui_print " ";
+ui_print "Device: EEBBK P22H190";
+ui_print "Author: @KERNEL_AUTHOR@";
+ui_print "Version: @KERNEL_RELEASE@";
+ui_print "Build time: @BUILD_TIME@";
+ui_print " ";
+
+ui_print "Flashing kernel";
+# Preserve the current boot image except for the bundled Image.
+split_boot;
+flash_boot;
+
+ui_print "Flashing socko";
+SOCKO_BLOCK=/dev/block/by-name/socko;
+[ -e "$SOCKO_BLOCK" ] || abort "socko partition not found. Aborting...";
+[ -f "$AKHOME/socko.img" ] || abort "Bundled socko image not found. Aborting...";
+
+socko_image_size=$(wc -c < "$AKHOME/socko.img");
+socko_block_size=$(blockdev --getsize64 "$SOCKO_BLOCK" 2>/dev/null);
+[ "$socko_block_size" ] || abort "Unable to determine socko partition size. Aborting...";
+[ "$socko_image_size" -le "$socko_block_size" ] || abort "socko image is larger than its partition. Aborting...";
+
+blockdev --setrw "$SOCKO_BLOCK" 2>/dev/null;
+dd if="$AKHOME/socko.img" of="$SOCKO_BLOCK" bs=4M || abort "Flashing socko failed. Aborting...";
+sync;
+
+ui_print "Done";

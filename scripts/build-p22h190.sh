@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Targets:
 #   kernel  build Image and modules only
-#   socko   build Image/modules and generate a patched socko image
-#   all     same as socko (default, kept for backwards compatibility)
+#   recovery build Image, patch socko, and generate one recovery upgrade zip
+#   socko/all aliases for recovery (kept for backwards compatibility)
 # Profiles are selected with P22H190_PROFILE and P22H190_DEFCONFIG. The
 # default profile remains the original P22H190 build; Droidspaces uses:
 #   P22H190_PROFILE=droidspaces
@@ -14,14 +14,14 @@ if [[ "$TARGET" == --target=* ]]; then
     TARGET="${TARGET#--target=}"
 fi
 case "$TARGET" in
-    kernel|socko|all)
+    kernel|recovery|socko|all)
         ;;
     -h|--help|help)
-        printf 'usage: %s [kernel|socko|all]\n' "$0"
+        printf 'usage: %s [kernel|recovery|socko|all]\n' "$0"
         printf '\n'
         printf '  kernel  build Image/modules and publish kernel-output\n'
-        printf '  socko   build, patch factory modules, and rebuild socko.img\n'
-        printf '  all     alias for socko (default)\n'
+        printf '  recovery build and package one recovery upgrade zip\n'
+        printf '  socko/all aliases for recovery (default)\n'
         printf '\n'
         printf '  Droidspaces profile:\n'
         printf '    P22H190_PROFILE=droidspaces \\\n'
@@ -31,7 +31,7 @@ case "$TARGET" in
         ;;
     *)
         printf 'error: unknown target: %s\n' "$TARGET" >&2
-        printf 'usage: %s [kernel|socko|all]\n' "$0" >&2
+        printf 'usage: %s [kernel|recovery|socko|all]\n' "$0" >&2
         exit 2
         ;;
 esac
@@ -50,8 +50,8 @@ TC_DIR="${ANDROID_CLANG_DIR:-$SRC_DIR/out/toolchains/clang-r383902/bin}"
 KPM_PATCHER="${KPM_PATCHER:-$SRC_DIR/out/tools/patch_linux}"
 MODULE_METADATA_PATCHER="${MODULE_METADATA_PATCHER:-$SRC_DIR/tools/patch-module-metadata.pl}"
 SOCKO_TEMPLATE="${SOCKO_TEMPLATE:-$SRC_DIR/prebuilts/p22h190/socko.factory.img}"
-SOCKO_OUTPUT="${SOCKO_OUTPUT:-$DEST_DIR/socko.img}"
 ANYKERNEL_DIR="${ANYKERNEL_DIR:-$SRC_DIR/out/AnyKernel3}"
+RECOVERY_SCRIPT_TEMPLATE="${RECOVERY_SCRIPT_TEMPLATE:-$SRC_DIR/scripts/p22h190-recovery-anykernel.sh.in}"
 ENABLE_KPM="${ENABLE_KPM:-1}"
 FUSERMOUNT="${FUSERMOUNT:-$(command -v fusermount || command -v fusermount3 || true)}"
 
@@ -92,6 +92,11 @@ if [[ "$TARGET" != "kernel" ]]; then
         printf 'error: module metadata patcher not found: %s\n' "$MODULE_METADATA_PATCHER" >&2
         exit 1
     fi
+
+    if [[ ! -f "$RECOVERY_SCRIPT_TEMPLATE" ]]; then
+        printf 'error: recovery installer template not found: %s\n' "$RECOVERY_SCRIPT_TEMPLATE" >&2
+        exit 1
+    fi
 fi
 
 export PATH="$TC_DIR:$PATH"
@@ -101,6 +106,10 @@ KERNEL_LOCALVERSION="-twodays-custom-g$GIT_HASH"
 if [[ "$PROFILE" != "p22h190" ]]; then
     KERNEL_LOCALVERSION="-twodays-$PROFILE-custom-g$GIT_HASH"
 fi
+KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-twodays}"
+KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-P22H190-build}"
+BUILD_TIME="${KBUILD_BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%d %H:%M:%S UTC')}"
+KERNEL_AUTHOR="$KBUILD_BUILD_USER"
 
 MAKE_ARGS=(
     O="$OUT_DIR"
@@ -110,6 +119,9 @@ MAKE_ARGS=(
     CROSS_COMPILE=aarch64-linux-gnu-
     CLANG_TRIPLE=aarch64-linux-gnu-
     LOCALVERSION="$KERNEL_LOCALVERSION"
+    KBUILD_BUILD_USER="$KBUILD_BUILD_USER"
+    KBUILD_BUILD_HOST="$KBUILD_BUILD_HOST"
+    KBUILD_BUILD_TIMESTAMP="$BUILD_TIME"
 )
 
 JOBS="${JOBS:-$(nproc)}"
@@ -240,7 +252,7 @@ for relative in "${SOCKO_MODULES[@]}"; do
     cp -f "$module" "$STAGE/socko-modules/$(basename "$relative")"
 done
 
-printf '%s\n' '[3/5] rebuilding socko image with compatible modules'
+printf '%s\n' '[3/4] rebuilding socko image with compatible modules'
 cp -f "$SOCKO_TEMPLATE" "$STAGE/socko.img"
 mkdir -p "$SOCKO_MOUNT"
 fuse2fs -o fakeroot "$STAGE/socko.img" "$SOCKO_MOUNT"
@@ -284,10 +296,7 @@ done
 "$FUSERMOUNT" -u "$SOCKO_MOUNT"
 SOCKO_MOUNTED=0
 e2fsck -fn "$STAGE/socko.img" >/dev/null
-mkdir -p "$(dirname "$SOCKO_OUTPUT")"
-cp -f "$STAGE/socko.img" "$SOCKO_OUTPUT"
-
-printf '%s\n' '[4/5] packaging AnyKernel3'
+printf '%s\n' '[4/4] packaging recovery upgrade zip'
 if [[ ! -f "$ANYKERNEL_DIR/anykernel.sh" ]]; then
     printf 'error: AnyKernel3 template not found: %s\n' "$ANYKERNEL_DIR" >&2
     exit 1
@@ -296,24 +305,44 @@ AK_STAGE="$STAGE/AnyKernel3"
 cp -a "$ANYKERNEL_DIR/." "$AK_STAGE/"
 rm -rf "$AK_STAGE/.git" "$AK_STAGE/.github"
 cp -f "$STAGE/Image" "$AK_STAGE/Image"
-rm -rf "$AK_STAGE/modules"
-mkdir -p "$AK_STAGE/modules/system/lib/modules/$KERNEL_RELEASE"
-while IFS= read -r -d '' module; do
-    cp -f "$module" "$AK_STAGE/modules/system/lib/modules/$KERNEL_RELEASE/"
-done < <(find "$STAGE/modules" -type f -name '*.ko' -print0)
-sed -i -E "s/^kernel.string=.*/kernel.string=EEBBK P22H190 $KERNEL_RELEASE/" \
-    "$AK_STAGE/anykernel.sh"
-# The upstream template contains example device names; keep this package
-# usable on the target by disabling its example-device guard.
-sed -i -E 's/^do.devicecheck=.*/do.devicecheck=0/' "$AK_STAGE/anykernel.sh"
-sed -i -E 's/^do.modules=.*/do.modules=1/' "$AK_STAGE/anykernel.sh"
-sed -i -E 's#^BLOCK=.*#BLOCK=auto;#' "$AK_STAGE/anykernel.sh"
-sed -i -E 's/^IS_SLOT_DEVICE=.*/IS_SLOT_DEVICE=auto;/' "$AK_STAGE/anykernel.sh"
 mkdir -p "$DEST_DIR"
-AK_OUTPUT="$DEST_DIR/AnyKernel3-P22H190${PROFILE_SUFFIX}-$KERNEL_RELEASE.zip"
+cp -f "$STAGE/socko.img" "$AK_STAGE/socko.img"
+cp -f "$RECOVERY_SCRIPT_TEMPLATE" "$AK_STAGE/anykernel.sh"
+
+export AK_KERNEL_RELEASE="$KERNEL_RELEASE"
+export AK_KERNEL_AUTHOR="$KERNEL_AUTHOR"
+export AK_BUILD_TIME="$BUILD_TIME"
+perl -0pi -e \
+    's/\@KERNEL_RELEASE\@/$ENV{AK_KERNEL_RELEASE}/g; \
+     s/\@KERNEL_AUTHOR\@/$ENV{AK_KERNEL_AUTHOR}/g; \
+     s/\@BUILD_TIME\@/$ENV{AK_BUILD_TIME}/g' \
+    "$AK_STAGE/anykernel.sh"
+chmod 0755 "$AK_STAGE/anykernel.sh"
+
+if [[ ! -f "$AK_STAGE/tools/ak3-core.sh" ]]; then
+    printf 'error: AnyKernel3 boot unpack tool is missing: %s/tools/ak3-core.sh\n' "$AK_STAGE" >&2
+    exit 1
+fi
+
+cat > "$AK_STAGE/build-info.txt" <<EOF
+device=EEBBK P22H190
+profile=$PROFILE
+defconfig=$DEFCONFIG
+kernel_release=$KERNEL_RELEASE
+kernel_author=$KERNEL_AUTHOR
+build_time=$BUILD_TIME
+git_hash=$GIT_HASH
+socko_target=/dev/block/by-name/socko
+EOF
+
+RECOVERY_OUTPUT="$DEST_DIR/P22H190-recovery${PROFILE_SUFFIX}-$KERNEL_RELEASE.zip"
+rm -f "$DEST_DIR"/*.zip "$DEST_DIR"/*.img "$DEST_DIR"/Image \
+      "$DEST_DIR"/System.map "$DEST_DIR"/.config "$DEST_DIR"/build-info.txt \
+      "$DEST_DIR"/SHA256SUMS
+rm -rf "$DEST_DIR/modules" "$DEST_DIR/socko-modules"
 (
     cd "$AK_STAGE"
-    zip -q -r -9 "$AK_OUTPUT" .
+    zip -q -r -9 "$RECOVERY_OUTPUT" .
 )
 
 {
@@ -324,6 +353,8 @@ AK_OUTPUT="$DEST_DIR/AnyKernel3-P22H190${PROFILE_SUFFIX}-$KERNEL_RELEASE.zip"
     printf 'target=%s\n' "$TARGET"
     printf 'clang=%s\n' "$TC_DIR/clang"
     printf 'kernel_release=%s\n' "$KERNEL_RELEASE"
+    printf 'kernel_author=%s\n' "$KERNEL_AUTHOR"
+    printf 'build_time=%s\n' "$BUILD_TIME"
     printf 'git_hash=%s\n' "$GIT_HASH"
     printf 'kpm=%s\n' "$ENABLE_KPM"
     if [[ "$ENABLE_KPM" == "1" ]]; then
@@ -332,36 +363,15 @@ AK_OUTPUT="$DEST_DIR/AnyKernel3-P22H190${PROFILE_SUFFIX}-$KERNEL_RELEASE.zip"
     printf 'socko_modules=%s\n' "${#SOCKO_MODULES[@]}"
     printf 'socko_factory_modules=%s\n' "${#FACTORY_MODULES[@]}"
     printf 'socko_template=%s\n' "$SOCKO_TEMPLATE"
-    printf 'socko_output=%s\n' "$SOCKO_OUTPUT"
-    printf 'built_at=%s\n' "$(date -Is)"
+    printf 'socko_target=/dev/block/by-name/socko\n'
+    printf 'recovery_output=%s\n' "$RECOVERY_OUTPUT"
     sha256sum "$STAGE/Image"
-    sha256sum "$SOCKO_OUTPUT"
-    sha256sum "$AK_OUTPUT"
+    sha256sum "$STAGE/socko.img"
+    sha256sum "$RECOVERY_OUTPUT"
 } > "$STAGE/build-info.txt"
 
-mkdir -p "$DEST_DIR"
-rm -rf "$DEST_DIR/modules.new"
-rm -rf "$DEST_DIR/socko-modules.new"
-mv "$STAGE/modules" "$DEST_DIR/modules.new"
-mv "$STAGE/socko-modules" "$DEST_DIR/socko-modules.new"
-cp -f "$STAGE/Image" "$DEST_DIR/Image"
-cp -f "$STAGE/System.map" "$DEST_DIR/System.map"
-cp -f "$STAGE/.config" "$DEST_DIR/.config"
-cp -f "$STAGE/build-info.txt" "$DEST_DIR/build-info.txt"
-rm -rf "$DEST_DIR/modules"
-mv "$DEST_DIR/modules.new" "$DEST_DIR/modules"
-rm -rf "$DEST_DIR/socko-modules"
-mv "$DEST_DIR/socko-modules.new" "$DEST_DIR/socko-modules"
-
-printf '%s\n' '[5/5] artifacts'
-stat -c '%n %s bytes' "$DEST_DIR/Image"
-printf 'modules: '
-find "$DEST_DIR/modules" -type f -name '*.ko' | wc -l
-printf 'socko modules: '
-find "$DEST_DIR/socko-modules" -maxdepth 1 -type f -name '*.ko' | wc -l
-sha256sum "$DEST_DIR/Image"
-sha256sum "$SOCKO_OUTPUT"
-sha256sum "$AK_OUTPUT"
+printf '%s\n' '[4/4] recovery artifact'
+stat -c '%n %s bytes' "$RECOVERY_OUTPUT"
+sha256sum "$RECOVERY_OUTPUT"
 printf 'output: %s\n' "$DEST_DIR"
-printf 'socko: %s\n' "$SOCKO_OUTPUT"
-printf 'anykernel: %s\n' "$AK_OUTPUT"
+printf 'recovery: %s\n' "$RECOVERY_OUTPUT"
