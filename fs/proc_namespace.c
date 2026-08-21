@@ -22,7 +22,7 @@
 #include "internal.h"
 
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-extern bool susfs_hide_sus_mnts_for_non_su_procs;
+extern struct static_key_false susfs_is_hide_sus_mnts_for_non_su_procs_enabled;
 extern bool susfs_is_current_ksu_domain(void);
 #endif
 
@@ -109,16 +109,6 @@ static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	struct super_block *sb = mnt_path.dentry->d_sb;
 	int err;
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (READ_ONCE(susfs_hide_sus_mnts_for_non_su_procs) &&
-		r->mnt_id >= DEFAULT_KSU_MNT_ID &&
-		!susfs_is_current_ksu_domain())
-	{
-		return 0;
-	}
-#endif
-
 	if (sb->s_op->show_devname) {
 		err = sb->s_op->show_devname(m, mnt_path.dentry);
 		if (err)
@@ -154,16 +144,6 @@ static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
 	struct super_block *sb = mnt->mnt_sb;
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	int err;
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (READ_ONCE(susfs_hide_sus_mnts_for_non_su_procs) &&
-		r->mnt_id >= DEFAULT_KSU_MNT_ID &&
-		!susfs_is_current_ksu_domain())
-	{
-		return 0;
-	}
-#endif
-
 	seq_printf(m, "%i %i %u:%u ", r->mnt_id, r->mnt_parent->mnt_id,
 		   MAJOR(sb->s_dev), MINOR(sb->s_dev));
 	if (sb->s_op->show_path) {
@@ -227,16 +207,6 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 	struct path mnt_path = { .dentry = mnt->mnt_root, .mnt = mnt };
 	struct super_block *sb = mnt_path.dentry->d_sb;
 	int err;
-
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	if (READ_ONCE(susfs_hide_sus_mnts_for_non_su_procs) &&
-		r->mnt_id >= DEFAULT_KSU_MNT_ID &&
-		!susfs_is_current_ksu_domain())
-	{
-		return 0;
-	}
-#endif
-
 	/* device */
 	if (sb->s_op->show_devname) {
 		seq_puts(m, "device ");
@@ -273,6 +243,31 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 out:
 	return err;
 }
+
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+/* The 2.2 hook keeps the normal formatters untouched and selects a filtered
+ * formatter only for hidden mounts. */
+static int susfs_show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
+{
+	if (real_mount(mnt)->mnt_id >= DEFAULT_KSU_MNT_ID)
+		return 0;
+	return show_vfsmnt(m, mnt);
+}
+
+static int susfs_show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
+{
+	if (real_mount(mnt)->mnt_id >= DEFAULT_KSU_MNT_ID)
+		return 0;
+	return show_mountinfo(m, mnt);
+}
+
+static int susfs_show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
+{
+	if (real_mount(mnt)->mnt_id >= DEFAULT_KSU_MNT_ID)
+		return 0;
+	return show_vfsstat(m, mnt);
+}
+#endif
 
 static int mounts_open_common(struct inode *inode, struct file *file,
 			      int (*show)(struct seq_file *, struct vfsmount *))
@@ -341,16 +336,31 @@ static int mounts_release(struct inode *inode, struct file *file)
 
 static int mounts_open(struct inode *inode, struct file *file)
 {
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (static_branch_unlikely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled) &&
+		likely(!susfs_is_current_ksu_domain()))
+		return mounts_open_common(inode, file, susfs_show_vfsmnt);
+#endif
 	return mounts_open_common(inode, file, show_vfsmnt);
 }
 
 static int mountinfo_open(struct inode *inode, struct file *file)
 {
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (static_branch_unlikely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled) &&
+		likely(!susfs_is_current_ksu_domain()))
+		return mounts_open_common(inode, file, susfs_show_mountinfo);
+#endif
 	return mounts_open_common(inode, file, show_mountinfo);
 }
 
 static int mountstats_open(struct inode *inode, struct file *file)
 {
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	if (static_branch_unlikely(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled) &&
+		likely(!susfs_is_current_ksu_domain()))
+		return mounts_open_common(inode, file, susfs_show_vfsstat);
+#endif
 	return mounts_open_common(inode, file, show_vfsstat);
 }
 
