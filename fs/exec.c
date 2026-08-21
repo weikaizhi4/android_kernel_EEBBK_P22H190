@@ -1700,8 +1700,12 @@ static int exec_binprm(struct linux_binprm *bprm)
 extern struct static_key_true ksu_su_compat_enabled;
 extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
 extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+#endif
+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU_MANUAL_HOOK)
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
 			void *envp, int *flags);
+#endif
+#ifdef CONFIG_KSU_SUSFS
 extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
 				 void *argv, void *envp, int *flags);
 #endif
@@ -1729,6 +1733,9 @@ static int do_execveat_common(int fd, struct filename *filename,
 		ksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
 	}
 orig_flow:
+#elif defined(CONFIG_KSU_MANUAL_HOOK)
+	/* Manual Hook kernels do not have the SUSFS execve interception path. */
+	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 #endif
 
 	/*
