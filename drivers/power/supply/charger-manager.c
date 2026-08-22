@@ -3999,6 +3999,7 @@ static const struct of_device_id charger_manager_match[] = {
 	},
 	{},
 };
+MODULE_DEVICE_TABLE(of, charger_manager_match);
 
 static void cm_track_capacity_work(struct work_struct *work)
 {
