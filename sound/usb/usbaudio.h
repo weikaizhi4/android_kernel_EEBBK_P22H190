@@ -27,6 +27,7 @@
 #define USB_ID_PRODUCT(id) ((u16)(id))
 
 #define SPRD_AUD_PCM_STREAM_MAX 2
+#define USB_AUDIO_IFACE_UNUSED	((void *)-1L)
 
 struct snd_usb_audio {
 	int index;
