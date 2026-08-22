@@ -39,6 +39,10 @@
 #define RAMOOPS_KERNMSG_HDR "===="
 #define MIN_MEM_SIZE 4096UL
 
+#ifdef CONFIG_PSTORE_ALWAYS_KMSG_DUMP
+#define PSTORE_ALWAYS_KMSG_SIZE 0x10000UL
+#endif
+
 static ulong record_size = MIN_MEM_SIZE;
 module_param(record_size, ulong, 0400);
 MODULE_PARM_DESC(record_size,
@@ -407,13 +411,12 @@ static int notrace ramoops_pstore_write(struct pstore_record *record)
 	if (record->type != PSTORE_TYPE_DMESG)
 		return -EINVAL;
 
-	/*
-	 * Out of the various dmesg dump types, ramoops is currently designed
-	 * to only store crash logs, rather than storing general kernel logs.
-	 */
+#ifndef CONFIG_PSTORE_ALWAYS_KMSG_DUMP
+	/* Keep the historical ramoops behavior unless explicitly enabled. */
 	if (record->reason != KMSG_DUMP_OOPS &&
 	    record->reason != KMSG_DUMP_PANIC)
 		return -EINVAL;
+#endif
 
 	/* Skip Oopes when configured to do so. */
 	if (record->reason == KMSG_DUMP_OOPS && !cxt->dump_oops)
@@ -774,6 +777,14 @@ static int ramoops_probe(struct platform_device *pdev)
 	if (pdata->pmsg_size && !is_power_of_2(pdata->pmsg_size))
 		pdata->pmsg_size = rounddown_pow_of_two(pdata->pmsg_size);
 
+#ifdef CONFIG_PSTORE_ALWAYS_KMSG_DUMP
+	/* P22's ramoops region is 256 KiB; tolerate older 32 KiB DT values. */
+	if (pdata->record_size < PSTORE_ALWAYS_KMSG_SIZE)
+		pdata->record_size = PSTORE_ALWAYS_KMSG_SIZE;
+	if (pdata->console_size < PSTORE_ALWAYS_KMSG_SIZE)
+		pdata->console_size = PSTORE_ALWAYS_KMSG_SIZE;
+#endif
+
 	cxt->size = pdata->mem_size;
 	cxt->phys_addr = pdata->mem_address;
 	cxt->memtype = pdata->mem_type;
@@ -784,6 +795,15 @@ static int ramoops_probe(struct platform_device *pdev)
 	cxt->dump_oops = pdata->dump_oops;
 	cxt->flags = pdata->flags;
 	cxt->ecc_info = pdata->ecc_info;
+
+#ifdef CONFIG_PSTORE_ALWAYS_KMSG_DUMP
+	if (cxt->size < cxt->record_size + cxt->console_size +
+			cxt->ftrace_size + cxt->pmsg_size) {
+		pr_err("reserved memory is too small for 64 KiB pstore logs\n");
+		err = -EINVAL;
+		goto fail_out;
+	}
+#endif
 
 	paddr = cxt->phys_addr;
 

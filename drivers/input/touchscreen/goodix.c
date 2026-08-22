@@ -30,6 +30,7 @@
 #include <linux/slab.h>
 #include <linux/acpi.h>
 #include <linux/of.h>
+#include <linux/workqueue.h>
 #include <asm/unaligned.h>
 
 struct goodix_ts_data {
@@ -54,6 +55,9 @@ struct goodix_ts_data {
 	const char *cfg_name;
 	struct completion firmware_loading_complete;
 	unsigned long irq_flags;
+	struct work_struct recovery_work;
+	atomic_t io_errors;
+	atomic_t recovery_pending;
 };
 
 #define GOODIX_GPIO_INT_NAME		"irq"
@@ -79,6 +83,9 @@ struct goodix_ts_data {
 
 #define GOODIX_BUFFER_STATUS_READY	BIT(7)
 #define GOODIX_BUFFER_STATUS_TIMEOUT	20
+#define GOODIX_IO_ERROR_THRESHOLD	3
+
+static int goodix_reset(struct goodix_ts_data *ts);
 
 #define RESOLUTION_LOC		1
 #define MAX_CONTACTS_LOC	5
@@ -306,7 +313,7 @@ static void goodix_ts_report_touch(struct goodix_ts_data *ts, u8 *coor_data)
  * Called when the IRQ is triggered. Read the current device state, and push
  * the input events to the user space.
  */
-static void goodix_process_events(struct goodix_ts_data *ts)
+static int goodix_process_events(struct goodix_ts_data *ts)
 {
 	u8  point_data[1 + GOODIX_CONTACT_SIZE * GOODIX_MAX_CONTACTS];
 	int touch_num;
@@ -314,7 +321,7 @@ static void goodix_process_events(struct goodix_ts_data *ts)
 
 	touch_num = goodix_ts_read_input_report(ts, point_data);
 	if (touch_num < 0)
-		return;
+		return touch_num;
 
 	/*
 	 * Bit 4 of the first byte reports the status of the capacitive
@@ -328,6 +335,7 @@ static void goodix_process_events(struct goodix_ts_data *ts)
 
 	input_mt_sync_frame(ts->input_dev);
 	input_sync(ts->input_dev);
+	return 0;
 }
 
 /**
@@ -339,11 +347,25 @@ static void goodix_process_events(struct goodix_ts_data *ts)
 static irqreturn_t goodix_ts_irq_handler(int irq, void *dev_id)
 {
 	struct goodix_ts_data *ts = dev_id;
+	int error;
 
-	goodix_process_events(ts);
+	error = goodix_process_events(ts);
 
-	if (goodix_i2c_write_u8(ts->client, GOODIX_READ_COOR_ADDR, 0) < 0)
+	if (goodix_i2c_write_u8(ts->client, GOODIX_READ_COOR_ADDR, 0) < 0) {
 		dev_err(&ts->client->dev, "I2C write end_cmd error\n");
+		error = -EIO;
+	}
+
+	if (error < 0) {
+		if (atomic_inc_return(&ts->io_errors) >=
+			GOODIX_IO_ERROR_THRESHOLD &&
+			atomic_cmpxchg(&ts->recovery_pending, 0, 1) == 0) {
+			disable_irq_nosync(ts->client->irq);
+			schedule_work(&ts->recovery_work);
+		}
+	} else {
+		atomic_set(&ts->io_errors, 0);
+	}
 
 	return IRQ_HANDLED;
 }
@@ -501,6 +523,27 @@ static int goodix_reset(struct goodix_ts_data *ts)
 		return error;
 
 	return 0;
+}
+
+static void goodix_recovery_work(struct work_struct *work)
+{
+	struct goodix_ts_data *ts = container_of(work,
+			struct goodix_ts_data, recovery_work);
+	int error;
+
+	if (!ts->gpiod_int || !ts->gpiod_rst)
+		goto out;
+
+	wait_for_completion(&ts->firmware_loading_complete);
+	error = goodix_reset(ts);
+	if (error)
+		dev_err(&ts->client->dev,
+			"Controller recovery reset failed: %d\n", error);
+
+out:
+	atomic_set(&ts->io_errors, 0);
+	atomic_set(&ts->recovery_pending, 0);
+	enable_irq(ts->client->irq);
 }
 
 /**
@@ -839,6 +882,9 @@ static int goodix_ts_probe(struct i2c_client *client,
 	ts->client = client;
 	i2c_set_clientdata(client, ts);
 	init_completion(&ts->firmware_loading_complete);
+	INIT_WORK(&ts->recovery_work, goodix_recovery_work);
+	atomic_set(&ts->io_errors, 0);
+	atomic_set(&ts->recovery_pending, 0);
 
 	error = goodix_get_gpio_config(ts);
 	if (error)
@@ -898,6 +944,10 @@ static int goodix_ts_remove(struct i2c_client *client)
 {
 	struct goodix_ts_data *ts = i2c_get_clientdata(client);
 
+	cancel_work_sync(&ts->recovery_work);
+	if (atomic_xchg(&ts->recovery_pending, 0))
+		enable_irq(client->irq);
+
 	if (ts->gpiod_int && ts->gpiod_rst)
 		wait_for_completion(&ts->firmware_loading_complete);
 
@@ -909,6 +959,10 @@ static int __maybe_unused goodix_suspend(struct device *dev)
 	struct i2c_client *client = to_i2c_client(dev);
 	struct goodix_ts_data *ts = i2c_get_clientdata(client);
 	int error;
+
+	cancel_work_sync(&ts->recovery_work);
+	if (atomic_xchg(&ts->recovery_pending, 0))
+		enable_irq(client->irq);
 
 	/* We need gpio pins to suspend/resume */
 	if (!ts->gpiod_int || !ts->gpiod_rst) {

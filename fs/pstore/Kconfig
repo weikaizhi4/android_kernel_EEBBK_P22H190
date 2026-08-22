@@ -48,6 +48,15 @@ config PSTORE_CONSOLE
 	  When the option is enabled, pstore will log all kernel
 	  messages, even if no oops or panic happened.
 
+config PSTORE_ALWAYS_KMSG_DUMP
+	bool "Persist kernel logs on every reboot"
+	depends on PSTORE
+	help
+	  Dump the kernel message buffer to pstore for restart, halt and
+	  poweroff paths as well as panic and oops paths.  The ramoops
+	  backend also reserves at least 64 KiB for the dmesg and console
+	  records when this option is enabled.
+
 config PSTORE_PMSG
 	bool "Log user space messages"
 	depends on PSTORE
