@@ -145,6 +145,7 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 	struct sprd_panel *panel = NULL;
 	/*Tab A8 code for AX6300DEV-875 by fengzhigang at 20210926 end*/
 	static bool is_enabled = true;
+	bool first_enable = is_enabled;
 
 	DRM_INFO("%s(last_dpms=%d, dpms=%d)\n",
 			__func__, dsi->ctx.last_dpms, dsi->ctx.dpms);
@@ -169,7 +170,6 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 
 	if (is_enabled) {
 		is_enabled = false;
-		dsi->ctx.is_inited = true;
 		/*Tab A8 code for AX6300DEV-875 by fengzhigang at 20210926 start*/
 		if (dsi->panel) {
 			panel = container_of(dsi->panel, struct sprd_panel, base);
@@ -180,8 +180,14 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 						msecs_to_jiffies(panel->info.esd_conf.esd_check_period));
 		}
 		/*Tab A8 code for AX6300DEV-875 by fengzhigang at 20210926 end*/
-		mutex_unlock(&dsi_lock);
-		return;
+	}
+
+	if (first_enable) {
+		sprd_dpu_stop(dpu);
+		if (dsi->panel) {
+			drm_panel_disable(dsi->panel);
+			drm_panel_unprepare(dsi->panel);
+		}
 	}
 
 	pm_runtime_get_sync(dsi->dev.parent);

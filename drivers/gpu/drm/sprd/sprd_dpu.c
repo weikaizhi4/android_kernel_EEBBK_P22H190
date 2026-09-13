@@ -188,7 +188,6 @@ static void sprd_plane_cleanup_fb(struct drm_plane *plane,
 	struct sprd_gem_obj *sprd_gem;
 	struct sprd_dpu *dpu;
 	int i;
-	static atomic_t logo2animation = { -1 };
 
 	if ((curr_state->fb == old_state->fb) || !old_state->fb)
 		return;
@@ -206,15 +205,6 @@ static void sprd_plane_cleanup_fb(struct drm_plane *plane,
 		sprd_gem = to_sprd_gem_obj(obj);
 		if (sprd_gem->need_iommu)
 			sprd_dpu_iommu_unmap(&dpu->dev, sprd_gem);
-	}
-
-	if (unlikely(atomic_inc_not_zero(&logo2animation)) &&
-		dpu->ctx.logo_addr) {
-		DRM_INFO("free logo memory addr:0x%lx size:0x%lx\n",
-			dpu->ctx.logo_addr, dpu->ctx.logo_size);
-		free_reserved_area(phys_to_virt(dpu->ctx.logo_addr),
-			phys_to_virt(dpu->ctx.logo_addr + dpu->ctx.logo_size),
-			-1, "logo");
 	}
 }
 
@@ -693,8 +683,6 @@ static void sprd_crtc_atomic_enable(struct drm_crtc *crtc,
 		 * dpu r6p0 need resume after dsi resume on div6 scences
 		 * for dsi core and dpi clk depends on dphy clk
 		 */
-		if (!strcmp(dpu->ctx.version, "dpu-r6p0"))
-			sprd_dpu_resume(dpu);
 		is_enabled = false;
 	}
 	else
