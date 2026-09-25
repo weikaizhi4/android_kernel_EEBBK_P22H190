@@ -184,10 +184,6 @@ static void sprd_dsi_encoder_enable(struct drm_encoder *encoder)
 
 	if (first_enable) {
 		sprd_dpu_stop(dpu);
-		if (dsi->panel) {
-			drm_panel_disable(dsi->panel);
-			drm_panel_unprepare(dsi->panel);
-		}
 	}
 
 	pm_runtime_get_sync(dsi->dev.parent);
