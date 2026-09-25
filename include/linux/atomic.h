@@ -31,6 +31,18 @@
 #define  atomic_set_release(v, i)	smp_store_release(&(v)->counter, (i))
 #endif
 
+#ifndef atomic_cond_read_relaxed
+#define atomic_cond_read_relaxed(v, c) 				\
+({								\
+	int VAL;							\
+	do {							\
+		VAL = atomic_read(v);				\
+		cpu_relax();					\
+	} while (!(c));					\
+	VAL;						\
+})
+#endif
+
 /*
  * The idea here is to build acquire/release variants by adding explicit
  * barriers on top of the relaxed variant. In the case where the relaxed
