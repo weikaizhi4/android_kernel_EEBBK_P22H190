@@ -101,11 +101,9 @@ fi
 
 export PATH="$TC_DIR:$PATH"
 
-GIT_HASH="$(git -C "$SRC_DIR" rev-parse --short=12 HEAD)"
-KERNEL_LOCALVERSION="-twodays-custom-g$GIT_HASH"
-if [[ "$PROFILE" != "p22h190" ]]; then
-    KERNEL_LOCALVERSION="-twodays-$PROFILE-custom-g$GIT_HASH"
-fi
+# Keep the release string stable so the kernel and factory modules use the
+# exact same vermagic across reproducible builds.
+KERNEL_LOCALVERSION="-Slimezhao-v1.0"
 KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-twodays}"
 KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-P22H190-build}"
 BUILD_TIME="${KBUILD_BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%d %H:%M:%S UTC')}"
@@ -118,7 +116,6 @@ MAKE_ARGS=(
     LD=ld.lld
     CROSS_COMPILE=aarch64-linux-gnu-
     CLANG_TRIPLE=aarch64-linux-gnu-
-    LOCALVERSION="$KERNEL_LOCALVERSION"
     KBUILD_BUILD_USER="$KBUILD_BUILD_USER"
     KBUILD_BUILD_HOST="$KBUILD_BUILD_HOST"
     KBUILD_BUILD_TIMESTAMP="$BUILD_TIME"
@@ -161,6 +158,19 @@ KERNEL_RELEASE="$(make -C "$SRC_DIR" "${MAKE_ARGS[@]}" -s kernelrelease)"
 if [[ ! -f "$OUT_DIR/Module.symvers" ]]; then
     printf 'error: build completed without %s\n' "$OUT_DIR/Module.symvers" >&2
     exit 1
+fi
+KERNEL_VERMAGIC=""
+if [[ "$TARGET" != "kernel" ]]; then
+    REFERENCE_MODULE="$(find "$OUT_DIR" -type f -path '*/kernel/*.ko' -print -quit 2>/dev/null || true)"
+    if [[ -z "$REFERENCE_MODULE" ]]; then
+        printf 'error: no built kernel module available to determine vermagic\n' >&2
+        exit 1
+    fi
+    KERNEL_VERMAGIC="$(modinfo -F vermagic "$REFERENCE_MODULE")"
+    if [[ -z "$KERNEL_VERMAGIC" ]]; then
+        printf 'error: cannot read vermagic from %s\n' "$REFERENCE_MODULE" >&2
+        exit 1
+    fi
 fi
 
 STAGE="$(mktemp -d /tmp/p22h190-output.XXXXXX)"
@@ -275,7 +285,7 @@ done < <(find "$SOCKO_MOUNT" -maxdepth 1 -type f -name '*.ko' -print0)
 
 if ((${#FACTORY_MODULES[@]})); then
     perl "$MODULE_METADATA_PATCHER" \
-        "$OUT_DIR/Module.symvers" "$KERNEL_RELEASE" "$OBJCOPY" \
+        "$OUT_DIR/Module.symvers" "$KERNEL_VERMAGIC" "$OBJCOPY" \
         "${FACTORY_MODULES[@]}"
 fi
 

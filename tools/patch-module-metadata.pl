@@ -7,7 +7,7 @@ use File::Copy qw(move);
 use File::Temp qw(tempfile);
 
 sub usage {
-    die "usage: $0 <Module.symvers> <kernel-release> <llvm-objcopy> <module>...\n";
+    die "usage: $0 <Module.symvers> <kernel-vermagic> <llvm-objcopy> <module>...\n";
 }
 
 sub read_file {
@@ -43,7 +43,7 @@ sub module_versions {
 }
 
 usage() if @ARGV < 4;
-my ($symvers, $release, $objcopy, @modules) = @ARGV;
+my ($symvers, $vermagic, $objcopy, @modules) = @ARGV;
 
 my %crc_by_symbol;
 open my $symvers_fh, '<', $symvers or die "open $symvers: $!\n";
@@ -90,7 +90,7 @@ for my $module (@modules) {
         if index($modinfo_data, 'vermagic=', $start + 1) >= 0;
     my $end = index($modinfo_data, "\0", $start);
     die "$module: malformed vermagic entry\n" if $end < 0;
-    substr($modinfo_data, $start, $end - $start + 1) = "vermagic=$release\0";
+    substr($modinfo_data, $start, $end - $start + 1) = "vermagic=$vermagic\0";
     write_file($modinfo, $modinfo_data);
 
     my ($final_fh, $final_module) = tempfile('.module-final.XXXXXX', SUFFIX => '.ko', DIR => dirname($module), UNLINK => 0);
@@ -113,7 +113,7 @@ for my $module (@modules) {
     my $patched_release = <$vermagic_fh>;
     close $vermagic_fh or die "modinfo failed for $final_module\n";
     chomp $patched_release;
-    die "$module: vermagic update failed\n" unless $patched_release eq $release;
+    die "$module: vermagic update failed\n" unless $patched_release eq $vermagic;
 
     chmod $mode, $final_module or die "chmod $final_module: $!\n";
     move($final_module, $module) or die "replace $module: $!\n";
