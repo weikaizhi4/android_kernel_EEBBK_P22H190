@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2017-2018 HUAWEI, Inc.
- *             http://www.huawei.com/
- * Created by Gao Xiang <gaoxiang25@huawei.com>
+ *             https://www.huawei.com/
  */
 #include <linux/module.h>
 #include <linux/buffer_head.h>
 #include <linux/statfs.h>
 #include <linux/parser.h>
 #include <linux/seq_file.h>
+#include <linux/crc32c.h>
 #include "xattr.h"
 
 #define CREATE_TRACE_POINTS
@@ -16,199 +16,339 @@
 
 static struct kmem_cache *erofs_inode_cachep __read_mostly;
 
-static void init_once(void *ptr)
+void _erofs_err(struct super_block *sb, const char *function,
+		const char *fmt, ...)
 {
-	struct erofs_vnode *vi = ptr;
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	pr_err("(device %s): %s: %pV", sb->s_id, function, &vaf);
+	va_end(args);
+}
+
+void _erofs_info(struct super_block *sb, const char *function,
+		 const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	pr_info("(device %s): %pV", sb->s_id, &vaf);
+	va_end(args);
+}
+
+static int erofs_superblock_csum_verify(struct super_block *sb, void *sbdata)
+{
+	struct erofs_super_block *dsb;
+	u32 expected_crc, crc;
+
+	dsb = kmemdup(sbdata + EROFS_SUPER_OFFSET,
+		      EROFS_BLKSIZ - EROFS_SUPER_OFFSET, GFP_KERNEL);
+	if (!dsb)
+		return -ENOMEM;
+
+	expected_crc = le32_to_cpu(dsb->checksum);
+	dsb->checksum = 0;
+	/* to allow for x86 boot sectors and other oddities. */
+	crc = crc32c(~0, dsb, EROFS_BLKSIZ - EROFS_SUPER_OFFSET);
+	kfree(dsb);
+
+	if (crc != expected_crc) {
+		erofs_err(sb, "invalid checksum 0x%08x, 0x%08x expected",
+			  crc, expected_crc);
+		return -EBADMSG;
+	}
+	return 0;
+}
+
+static void erofs_inode_init_once(void *ptr)
+{
+	struct erofs_inode *vi = ptr;
 
 	inode_init_once(&vi->vfs_inode);
 }
 
-static int __init erofs_init_inode_cache(void)
+static struct inode *erofs_alloc_inode(struct super_block *sb)
 {
-	erofs_inode_cachep = kmem_cache_create("erofs_inode",
-					       sizeof(struct erofs_vnode), 0,
-					       SLAB_RECLAIM_ACCOUNT,
-					       init_once);
-
-	return erofs_inode_cachep ? 0 : -ENOMEM;
-}
-
-static void erofs_exit_inode_cache(void)
-{
-	kmem_cache_destroy(erofs_inode_cachep);
-}
-
-static struct inode *alloc_inode(struct super_block *sb)
-{
-	struct erofs_vnode *vi =
+	struct erofs_inode *vi =
 		kmem_cache_alloc(erofs_inode_cachep, GFP_KERNEL);
 
 	if (!vi)
 		return NULL;
 
 	/* zero out everything except vfs_inode */
-	memset(vi, 0, offsetof(struct erofs_vnode, vfs_inode));
+	memset(vi, 0, offsetof(struct erofs_inode, vfs_inode));
 	return &vi->vfs_inode;
 }
 
-static void free_inode(struct inode *inode)
+static void i_callback(struct rcu_head *head)
 {
-	struct erofs_vnode *vi = EROFS_V(inode);
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	struct erofs_inode *vi = EROFS_I(inode);
 
-	/* be careful RCU symlink path (see ext4_inode_info->i_data)! */
-	if (is_inode_fast_symlink(inode))
+	/* be careful of RCU symlink path */
+	if (inode->i_op == &erofs_fast_symlink_iops)
 		kfree(inode->i_link);
-
 	kfree(vi->xattr_shared_xattrs);
 
 	kmem_cache_free(erofs_inode_cachep, vi);
 }
 
-static bool check_layout_compatibility(struct super_block *sb,
-				       struct erofs_super_block *layout)
+static void erofs_destroy_inode(struct inode *inode)
 {
-	const unsigned int requirements = le32_to_cpu(layout->requirements);
+	call_rcu(&inode->i_rcu, i_callback);
+}
 
-	EROFS_SB(sb)->requirements = requirements;
+static bool check_layout_compatibility(struct super_block *sb,
+				       struct erofs_super_block *dsb)
+{
+	const unsigned int feature = le32_to_cpu(dsb->feature_incompat);
+
+	EROFS_SB(sb)->feature_incompat = feature;
 
 	/* check if current kernel meets all mandatory requirements */
-	if (requirements & (~EROFS_ALL_REQUIREMENTS)) {
-		errln("unidentified requirements %x, please upgrade kernel version",
-		      requirements & ~EROFS_ALL_REQUIREMENTS);
+	if (feature & (~EROFS_ALL_FEATURE_INCOMPAT)) {
+		erofs_err(sb,
+			  "unidentified incompatible feature %x, please upgrade kernel version",
+			   feature & ~EROFS_ALL_FEATURE_INCOMPAT);
 		return false;
 	}
 	return true;
 }
 
-static int superblock_read(struct super_block *sb)
+#ifdef CONFIG_EROFS_FS_ZIP
+/* read variable-sized metadata, offset will be aligned by 4-byte */
+static void *erofs_read_metadata(struct super_block *sb, struct page **pagep,
+				 erofs_off_t *offset, int *lengthp)
+{
+	struct page *page = *pagep;
+	u8 *buffer, *ptr;
+	int len, i, cnt;
+	erofs_blk_t blk;
+
+	*offset = round_up(*offset, 4);
+	blk = erofs_blknr(*offset);
+
+	if (!page || page->index != blk) {
+		if (page) {
+			unlock_page(page);
+			put_page(page);
+		}
+		page = erofs_get_meta_page(sb, blk);
+		if (IS_ERR(page))
+			goto err_nullpage;
+	}
+
+	ptr = kmap(page);
+	len = le16_to_cpu(*(__le16 *)&ptr[erofs_blkoff(*offset)]);
+	if (!len)
+		len = U16_MAX + 1;
+	buffer = kmalloc(len, GFP_KERNEL);
+	if (!buffer) {
+		buffer = ERR_PTR(-ENOMEM);
+		goto out;
+	}
+	*offset += sizeof(__le16);
+	*lengthp = len;
+
+	for (i = 0; i < len; i += cnt) {
+		cnt = min(EROFS_BLKSIZ - (int)erofs_blkoff(*offset), len - i);
+		blk = erofs_blknr(*offset);
+
+		if (!page || page->index != blk) {
+			if (page) {
+				kunmap(page);
+				unlock_page(page);
+				put_page(page);
+			}
+			page = erofs_get_meta_page(sb, blk);
+			if (IS_ERR(page)) {
+				kfree(buffer);
+				goto err_nullpage;
+			}
+			ptr = kmap(page);
+		}
+		memcpy(buffer + i, ptr + erofs_blkoff(*offset), cnt);
+		*offset += cnt;
+	}
+out:
+	kunmap(page);
+	*pagep = page;
+	return buffer;
+err_nullpage:
+	*pagep = NULL;
+	return page;
+}
+
+static int erofs_load_compr_cfgs(struct super_block *sb,
+				 struct erofs_super_block *dsb)
 {
 	struct erofs_sb_info *sbi;
-	struct buffer_head *bh;
-	struct erofs_super_block *layout;
+	struct page *page;
+	unsigned int algs, alg;
+	erofs_off_t offset;
+	int size, ret;
+
+	sbi = EROFS_SB(sb);
+	sbi->available_compr_algs = le16_to_cpu(dsb->u1.available_compr_algs);
+
+	if (sbi->available_compr_algs & ~Z_EROFS_ALL_COMPR_ALGS) {
+		erofs_err(sb, "try to load compressed fs with unsupported algorithms %x",
+			  sbi->available_compr_algs & ~Z_EROFS_ALL_COMPR_ALGS);
+		return -EINVAL;
+	}
+
+	offset = EROFS_SUPER_OFFSET + sbi->sb_size;
+	page = NULL;
+	alg = 0;
+	ret = 0;
+
+	for (algs = sbi->available_compr_algs; algs; algs >>= 1, ++alg) {
+		void *data;
+
+		if (!(algs & 1))
+			continue;
+
+		data = erofs_read_metadata(sb, &page, &offset, &size);
+		if (IS_ERR(data)) {
+			ret = PTR_ERR(data);
+			goto err;
+		}
+
+		switch (alg) {
+		case Z_EROFS_COMPRESSION_LZ4:
+			ret = z_erofs_load_lz4_config(sb, dsb, data, size);
+			break;
+		default:
+			DBG_BUGON(1);
+			ret = -EFAULT;
+		}
+		kfree(data);
+		if (ret)
+			goto err;
+	}
+err:
+	if (page) {
+		unlock_page(page);
+		put_page(page);
+	}
+	return ret;
+}
+#else
+static int erofs_load_compr_cfgs(struct super_block *sb,
+				 struct erofs_super_block *dsb)
+{
+	if (dsb->u1.available_compr_algs) {
+		erofs_err(sb, "try to load compressed fs when compression is disabled");
+		return -EINVAL;
+	}
+	return 0;
+}
+#endif
+
+static int erofs_read_superblock(struct super_block *sb)
+{
+	struct erofs_sb_info *sbi;
+	struct page *page;
+	struct erofs_super_block *dsb;
 	unsigned int blkszbits;
+	void *data;
 	int ret;
 
-	bh = sb_bread(sb, 0);
-
-	if (!bh) {
-		errln("cannot read erofs superblock");
-		return -EIO;
+	page = read_mapping_page(sb->s_bdev->bd_inode->i_mapping, 0, NULL);
+	if (IS_ERR(page)) {
+		erofs_err(sb, "cannot read erofs superblock");
+		return PTR_ERR(page);
 	}
 
 	sbi = EROFS_SB(sb);
-	layout = (struct erofs_super_block *)((u8 *)bh->b_data
-		 + EROFS_SUPER_OFFSET);
+
+	data = kmap(page);
+	dsb = (struct erofs_super_block *)(data + EROFS_SUPER_OFFSET);
 
 	ret = -EINVAL;
-	if (le32_to_cpu(layout->magic) != EROFS_SUPER_MAGIC_V1) {
-		errln("cannot find valid erofs superblock");
+	if (le32_to_cpu(dsb->magic) != EROFS_SUPER_MAGIC_V1) {
+		erofs_err(sb, "cannot find valid erofs superblock");
 		goto out;
 	}
 
-	blkszbits = layout->blkszbits;
+	sbi->feature_compat = le32_to_cpu(dsb->feature_compat);
+	if (erofs_sb_has_sb_chksum(sbi)) {
+		ret = erofs_superblock_csum_verify(sb, data);
+		if (ret)
+			goto out;
+	}
+
+	ret = -EINVAL;
+	blkszbits = dsb->blkszbits;
 	/* 9(512 bytes) + LOG_SECTORS_PER_BLOCK == LOG_BLOCK_SIZE */
-	if (unlikely(blkszbits != LOG_BLOCK_SIZE)) {
-		errln("blksize %u isn't supported on this platform",
-		      1 << blkszbits);
+	if (blkszbits != LOG_BLOCK_SIZE) {
+		erofs_err(sb, "blkszbits %u isn't supported on this platform",
+			  blkszbits);
 		goto out;
 	}
 
-	if (!check_layout_compatibility(sb, layout))
+	if (!check_layout_compatibility(sb, dsb))
 		goto out;
 
-	sbi->blocks = le32_to_cpu(layout->blocks);
-	sbi->meta_blkaddr = le32_to_cpu(layout->meta_blkaddr);
+	sbi->sb_size = 128 + dsb->sb_extslots * EROFS_SB_EXTSLOT_SIZE;
+	if (sbi->sb_size > EROFS_BLKSIZ) {
+		erofs_err(sb, "invalid sb_extslots %u (more than a fs block)",
+			  sbi->sb_size);
+		goto out;
+	}
+	sbi->blocks = le32_to_cpu(dsb->blocks);
+	sbi->meta_blkaddr = le32_to_cpu(dsb->meta_blkaddr);
 #ifdef CONFIG_EROFS_FS_XATTR
-	sbi->xattr_blkaddr = le32_to_cpu(layout->xattr_blkaddr);
+	sbi->xattr_blkaddr = le32_to_cpu(dsb->xattr_blkaddr);
 #endif
-	sbi->islotbits = ffs(sizeof(struct erofs_inode_v1)) - 1;
-	sbi->root_nid = le16_to_cpu(layout->root_nid);
-	sbi->inos = le64_to_cpu(layout->inos);
+	sbi->islotbits = ilog2(sizeof(struct erofs_inode_compact));
+	sbi->root_nid = le16_to_cpu(dsb->root_nid);
+	sbi->inos = le64_to_cpu(dsb->inos);
 
-	sbi->build_time = le64_to_cpu(layout->build_time);
-	sbi->build_time_nsec = le32_to_cpu(layout->build_time_nsec);
+	sbi->build_time = le64_to_cpu(dsb->build_time);
+	sbi->build_time_nsec = le32_to_cpu(dsb->build_time_nsec);
 
-	memcpy(&sb->s_uuid, layout->uuid, sizeof(layout->uuid));
+	memcpy(&sb->s_uuid, dsb->uuid, sizeof(dsb->uuid));
 
-	ret = strscpy(sbi->volume_name, layout->volume_name,
-		      sizeof(layout->volume_name));
+	ret = strscpy(sbi->volume_name, dsb->volume_name,
+		      sizeof(dsb->volume_name));
 	if (ret < 0) {	/* -E2BIG */
-		errln("bad volume name without NIL terminator");
+		erofs_err(sb, "bad volume name without NIL terminator");
 		ret = -EFSCORRUPTED;
 		goto out;
 	}
-	ret = 0;
+
+	/* parse on-disk compression configurations */
+	if (erofs_sb_has_compr_cfgs(sbi))
+		ret = erofs_load_compr_cfgs(sb, dsb);
+	else
+		ret = z_erofs_load_lz4_config(sb, dsb, NULL, 0);
 out:
-	brelse(bh);
+	kunmap(page);
+	put_page(page);
 	return ret;
 }
 
-#ifdef CONFIG_EROFS_FAULT_INJECTION
-const char *erofs_fault_name[FAULT_MAX] = {
-	[FAULT_KMALLOC]		= "kmalloc",
-	[FAULT_READ_IO]		= "read IO error",
-};
-
-static void __erofs_build_fault_attr(struct erofs_sb_info *sbi,
-				     unsigned int rate)
-{
-	struct erofs_fault_info *ffi = &sbi->fault_info;
-
-	if (rate) {
-		atomic_set(&ffi->inject_ops, 0);
-		ffi->inject_rate = rate;
-		ffi->inject_type = (1 << FAULT_MAX) - 1;
-	} else {
-		memset(ffi, 0, sizeof(struct erofs_fault_info));
-	}
-
-	set_opt(sbi, FAULT_INJECTION);
-}
-
-static int erofs_build_fault_attr(struct erofs_sb_info *sbi,
-				  substring_t *args)
-{
-	int rate = 0;
-
-	if (args->from && match_int(args, &rate))
-		return -EINVAL;
-
-	__erofs_build_fault_attr(sbi, rate);
-	return 0;
-}
-
-static unsigned int erofs_get_fault_rate(struct erofs_sb_info *sbi)
-{
-	return sbi->fault_info.inject_rate;
-}
-#else
-static void __erofs_build_fault_attr(struct erofs_sb_info *sbi,
-				     unsigned int rate)
-{
-}
-
-static int erofs_build_fault_attr(struct erofs_sb_info *sbi,
-				  substring_t *args)
-{
-	infoln("fault_injection options not supported");
-	return 0;
-}
-
-static unsigned int erofs_get_fault_rate(struct erofs_sb_info *sbi)
-{
-	return 0;
-}
-#endif
-
 #ifdef CONFIG_EROFS_FS_ZIP
-static int erofs_build_cache_strategy(struct erofs_sb_info *sbi,
+static int erofs_build_cache_strategy(struct super_block *sb,
 				      substring_t *args)
 {
+	struct erofs_sb_info *sbi = EROFS_SB(sb);
 	const char *cs = match_strdup(args);
 	int err = 0;
 
 	if (!cs) {
-		errln("Not enough memory to store cache strategy");
+		erofs_err(sb, "Not enough memory to store cache strategy");
 		return -ENOMEM;
 	}
 
@@ -219,27 +359,28 @@ static int erofs_build_cache_strategy(struct erofs_sb_info *sbi,
 	} else if (!strcmp(cs, "readaround")) {
 		sbi->cache_strategy = EROFS_ZIP_CACHE_READAROUND;
 	} else {
-		errln("Unrecognized cache strategy \"%s\"", cs);
+		erofs_err(sb, "Unrecognized cache strategy \"%s\"", cs);
 		err = -EINVAL;
 	}
 	kfree(cs);
 	return err;
 }
 #else
-static int erofs_build_cache_strategy(struct erofs_sb_info *sbi,
+static int erofs_build_cache_strategy(struct super_block *sb,
 				      substring_t *args)
 {
-	infoln("EROFS compression is disabled, so cache strategy is ignored");
+	erofs_info(sb, "EROFS compression is disabled, so cache strategy is ignored");
 	return 0;
 }
 #endif
 
 /* set up default EROFS parameters */
-static void default_options(struct erofs_sb_info *sbi)
+static void erofs_default_options(struct erofs_sb_info *sbi)
 {
 #ifdef CONFIG_EROFS_FS_ZIP
 	sbi->cache_strategy = EROFS_ZIP_CACHE_READAROUND;
 	sbi->max_sync_decompress_pages = 3;
+	sbi->readahead_sync_decompress = false;
 #endif
 #ifdef CONFIG_EROFS_FS_XATTR
 	set_opt(sbi, XATTR_USER);
@@ -254,7 +395,6 @@ enum {
 	Opt_nouser_xattr,
 	Opt_acl,
 	Opt_noacl,
-	Opt_fault_injection,
 	Opt_cache_strategy,
 	Opt_err
 };
@@ -264,12 +404,11 @@ static match_table_t erofs_tokens = {
 	{Opt_nouser_xattr, "nouser_xattr"},
 	{Opt_acl, "acl"},
 	{Opt_noacl, "noacl"},
-	{Opt_fault_injection, "fault_injection=%u"},
 	{Opt_cache_strategy, "cache_strategy=%s"},
 	{Opt_err, NULL}
 };
 
-static int parse_options(struct super_block *sb, char *options)
+static int erofs_parse_options(struct super_block *sb, char *options)
 {
 	substring_t args[MAX_OPT_ARGS];
 	char *p;
@@ -297,10 +436,10 @@ static int parse_options(struct super_block *sb, char *options)
 			break;
 #else
 		case Opt_user_xattr:
-			infoln("user_xattr options not supported");
+			erofs_info(sb, "user_xattr options not supported");
 			break;
 		case Opt_nouser_xattr:
-			infoln("nouser_xattr options not supported");
+			erofs_info(sb, "nouser_xattr options not supported");
 			break;
 #endif
 #ifdef CONFIG_EROFS_FS_POSIX_ACL
@@ -312,24 +451,19 @@ static int parse_options(struct super_block *sb, char *options)
 			break;
 #else
 		case Opt_acl:
-			infoln("acl options not supported");
+			erofs_info(sb, "acl options not supported");
 			break;
 		case Opt_noacl:
-			infoln("noacl options not supported");
+			erofs_info(sb, "noacl options not supported");
 			break;
 #endif
-		case Opt_fault_injection:
-			err = erofs_build_fault_attr(EROFS_SB(sb), args);
-			if (err)
-				return err;
-			break;
 		case Opt_cache_strategy:
-			err = erofs_build_cache_strategy(EROFS_SB(sb), args);
+			err = erofs_build_cache_strategy(sb, args);
 			if (err)
 				return err;
 			break;
 		default:
-			errln("Unrecognized mount option \"%s\" or missing value", p);
+			erofs_err(sb, "Unrecognized mount option \"%s\" or missing value", p);
 			return -EINVAL;
 		}
 	}
@@ -339,7 +473,7 @@ static int parse_options(struct super_block *sb, char *options)
 #ifdef CONFIG_EROFS_FS_ZIP
 static const struct address_space_operations managed_cache_aops;
 
-static int managed_cache_releasepage(struct page *page, gfp_t gfp_mask)
+static int erofs_managed_cache_releasepage(struct page *page, gfp_t gfp_mask)
 {
 	int ret = 1;	/* 0 - busy */
 	struct address_space *const mapping = page->mapping;
@@ -353,9 +487,9 @@ static int managed_cache_releasepage(struct page *page, gfp_t gfp_mask)
 	return ret;
 }
 
-static void managed_cache_invalidatepage(struct page *page,
-					 unsigned int offset,
-					 unsigned int length)
+static void erofs_managed_cache_invalidatepage(struct page *page,
+					       unsigned int offset,
+					       unsigned int length)
 {
 	const unsigned int stop = length + offset;
 
@@ -365,13 +499,13 @@ static void managed_cache_invalidatepage(struct page *page,
 	DBG_BUGON(stop > PAGE_SIZE || stop < length);
 
 	if (offset == 0 && stop == PAGE_SIZE)
-		while (!managed_cache_releasepage(page, GFP_NOFS))
+		while (!erofs_managed_cache_releasepage(page, GFP_NOFS))
 			cond_resched();
 }
 
 static const struct address_space_operations managed_cache_aops = {
-	.releasepage = managed_cache_releasepage,
-	.invalidatepage = managed_cache_invalidatepage,
+	.releasepage = erofs_managed_cache_releasepage,
+	.invalidatepage = erofs_managed_cache_invalidatepage,
 };
 
 static int erofs_init_managed_cache(struct super_block *sb)
@@ -379,7 +513,7 @@ static int erofs_init_managed_cache(struct super_block *sb)
 	struct erofs_sb_info *const sbi = EROFS_SB(sb);
 	struct inode *const inode = new_inode(sb);
 
-	if (unlikely(!inode))
+	if (!inode)
 		return -ENOMEM;
 
 	set_nlink(inode, 1);
@@ -401,22 +535,19 @@ static int erofs_fill_super(struct super_block *sb, void *data, int silent)
 	struct erofs_sb_info *sbi;
 	int err;
 
-	infoln("fill_super, device -> %s", sb->s_id);
-	infoln("options -> %s", (char *)data);
-
 	sb->s_magic = EROFS_SUPER_MAGIC;
 
-	if (unlikely(!sb_set_blocksize(sb, EROFS_BLKSIZ))) {
-		errln("failed to set erofs blksize");
+	if (!sb_set_blocksize(sb, EROFS_BLKSIZ)) {
+		erofs_err(sb, "failed to set erofs blksize");
 		return -EINVAL;
 	}
 
 	sbi = kzalloc(sizeof(*sbi), GFP_KERNEL);
-	if (unlikely(!sbi))
+	if (!sbi)
 		return -ENOMEM;
 
 	sb->s_fs_info = sbi;
-	err = superblock_read(sb);
+	err = erofs_read_superblock(sb);
 	if (err)
 		return err;
 
@@ -425,19 +556,14 @@ static int erofs_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_time_gran = 1;
 
 	sb->s_op = &erofs_sops;
-
-#ifdef CONFIG_EROFS_FS_XATTR
 	sb->s_xattr = erofs_xattr_handlers;
-#endif
+
 	/* set erofs default mount options */
-	default_options(sbi);
+	erofs_default_options(sbi);
 
-	err = parse_options(sb, data);
-	if (unlikely(err))
+	err = erofs_parse_options(sb, data);
+	if (err)
 		return err;
-
-	if (!silent)
-		infoln("root inode @ nid %llu", ROOT_NID(sbi));
 
 	if (test_opt(sbi, POSIX_ACL))
 		sb->s_flags |= SB_POSIXACL;
@@ -454,25 +580,25 @@ static int erofs_fill_super(struct super_block *sb, void *data, int silent)
 	if (IS_ERR(inode))
 		return PTR_ERR(inode);
 
-	if (unlikely(!S_ISDIR(inode->i_mode))) {
-		errln("rootino(nid %llu) is not a directory(i_mode %o)",
-		      ROOT_NID(sbi), inode->i_mode);
+	if (!S_ISDIR(inode->i_mode)) {
+		erofs_err(sb, "rootino(nid %llu) is not a directory(i_mode %o)",
+			  ROOT_NID(sbi), inode->i_mode);
 		iput(inode);
 		return -EINVAL;
 	}
 
 	sb->s_root = d_make_root(inode);
-	if (unlikely(!sb->s_root))
+	if (!sb->s_root)
 		return -ENOMEM;
 
 	erofs_shrinker_register(sb);
 	/* sb->s_umount is already locked, SB_ACTIVE and SB_BORN are not set */
 	err = erofs_init_managed_cache(sb);
-	if (unlikely(err))
+	if (err)
 		return err;
 
-	if (!silent)
-		infoln("mounted on %s with opts: %s.", sb->s_id, (char *)data);
+	erofs_info(sb, "mounted with opts: %s, root inode @ nid %llu.",
+		   (char *)data, ROOT_NID(sbi));
 	return 0;
 }
 
@@ -491,7 +617,6 @@ static void erofs_kill_sb(struct super_block *sb)
 	struct erofs_sb_info *sbi;
 
 	WARN_ON(sb->s_magic != EROFS_SUPER_MAGIC);
-	infoln("unmounting for %s", sb->s_id);
 
 	kill_block_super(sb);
 
@@ -530,16 +655,21 @@ static int __init erofs_module_init(void)
 	int err;
 
 	erofs_check_ondisk_layout_definitions();
-	infoln("initializing erofs " EROFS_VERSION);
 
-	err = erofs_init_inode_cache();
-	if (err)
+	erofs_inode_cachep = kmem_cache_create("erofs_inode",
+					       sizeof(struct erofs_inode), 0,
+					       SLAB_RECLAIM_ACCOUNT,
+					       erofs_inode_init_once);
+	if (!erofs_inode_cachep) {
+		err = -ENOMEM;
 		goto icache_err;
+	}
 
 	err = erofs_init_shrinker();
 	if (err)
 		goto shrinker_err;
 
+	erofs_pcpubuf_init();
 	err = z_erofs_init_zip_subsystem();
 	if (err)
 		goto zip_err;
@@ -548,7 +678,6 @@ static int __init erofs_module_init(void)
 	if (err)
 		goto fs_err;
 
-	infoln("successfully to initialize erofs");
 	return 0;
 
 fs_err:
@@ -556,7 +685,7 @@ fs_err:
 zip_err:
 	erofs_exit_shrinker();
 shrinker_err:
-	erofs_exit_inode_cache();
+	kmem_cache_destroy(erofs_inode_cachep);
 icache_err:
 	return err;
 }
@@ -566,8 +695,11 @@ static void __exit erofs_module_exit(void)
 	unregister_filesystem(&erofs_fs_type);
 	z_erofs_exit_zip_subsystem();
 	erofs_exit_shrinker();
-	erofs_exit_inode_cache();
-	infoln("successfully finalize erofs");
+
+	/* Ensure all RCU free inodes are safe before cache is destroyed. */
+	rcu_barrier();
+	kmem_cache_destroy(erofs_inode_cachep);
+	erofs_pcpubuf_exit();
 }
 
 /* get filesystem statistics */
@@ -608,9 +740,6 @@ static int erofs_show_options(struct seq_file *seq, struct dentry *root)
 	else
 		seq_puts(seq, ",noacl");
 #endif
-	if (test_opt(sbi, FAULT_INJECTION))
-		seq_printf(seq, ",fault_injection=%u",
-			   erofs_get_fault_rate(sbi));
 #ifdef CONFIG_EROFS_FS_ZIP
 	if (sbi->cache_strategy == EROFS_ZIP_CACHE_DISABLED) {
 		seq_puts(seq, ",cache_strategy=disabled");
@@ -618,9 +747,6 @@ static int erofs_show_options(struct seq_file *seq, struct dentry *root)
 		seq_puts(seq, ",cache_strategy=readahead");
 	} else if (sbi->cache_strategy == EROFS_ZIP_CACHE_READAROUND) {
 		seq_puts(seq, ",cache_strategy=readaround");
-	} else {
-		seq_puts(seq, ",cache_strategy=(unknown)");
-		DBG_BUGON(1);
 	}
 #endif
 	return 0;
@@ -630,11 +756,10 @@ static int erofs_remount(struct super_block *sb, int *flags, char *data)
 {
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 	unsigned int org_mnt_opt = sbi->mount_opt;
-	unsigned int org_inject_rate = erofs_get_fault_rate(sbi);
 	int err;
 
 	DBG_BUGON(!sb_rdonly(sb));
-	err = parse_options(sb, data);
+	err = erofs_parse_options(sb, data);
 	if (err)
 		goto out;
 
@@ -646,16 +771,14 @@ static int erofs_remount(struct super_block *sb, int *flags, char *data)
 	*flags |= SB_RDONLY;
 	return 0;
 out:
-	__erofs_build_fault_attr(sbi, org_inject_rate);
 	sbi->mount_opt = org_mnt_opt;
-
 	return err;
 }
 
 const struct super_operations erofs_sops = {
 	.put_super = erofs_put_super,
-	.alloc_inode = alloc_inode,
-	.destroy_inode = free_inode,
+	.alloc_inode = erofs_alloc_inode,
+	.destroy_inode = erofs_destroy_inode,
 	.statfs = erofs_statfs,
 	.show_options = erofs_show_options,
 	.remount_fs = erofs_remount,
