@@ -87,3 +87,4 @@ endif
 obj-$(CONFIG_QRTR)		+= qrtr/
 obj-$(CONFIG_NET_NCSI)		+= ncsi/
 obj-$(CONFIG_SPRD_IMS_BRIDGE)	+= ims_bridge/
+obj-$(CONFIG_XDP_SOCKETS)	+= xdp/

@@ -63,6 +63,7 @@
 #include <net/inet_hashtables.h>
 #include <net/inet6_hashtables.h>
 #include <net/bpf_sk_storage.h>
+#include <net/xdp_sock.h>
 
 /**
  *	sk_filter_trim_cap - run a packet through a socket filter
@@ -2640,8 +2641,12 @@ void xdp_do_flush_map(void)
 	struct bpf_map *map = ri->map_to_flush;
 
 	ri->map_to_flush = NULL;
-	if (map)
-		__dev_map_flush(map);
+	if (map) {
+		if (map->map_type == BPF_MAP_TYPE_XSKMAP)
+			__xsk_map_flush(map);
+		else
+			__dev_map_flush(map);
+	}
 }
 EXPORT_SYMBOL_GPL(xdp_do_flush_map);
 
@@ -2657,7 +2662,8 @@ static int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
 	unsigned long map_owner = ri->map_owner;
 	struct bpf_map *map = ri->map;
-	struct net_device *fwd = NULL;
+	void *fwd = NULL;
+	struct net_device *trace_dev = NULL;
 	u32 index = ri->ifindex;
 	int err;
 
@@ -2675,6 +2681,8 @@ static int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 		fwd = __dev_map_lookup_elem(map, index);
 	else if (map->map_type == BPF_MAP_TYPE_DEVMAP_HASH)
 		fwd = __dev_map_hash_lookup_elem(map, index);
+	else if (map->map_type == BPF_MAP_TYPE_XSKMAP)
+		fwd = __xsk_map_lookup_elem(map, index);
 	if (!fwd) {
 		err = -EINVAL;
 		goto err;
@@ -2682,15 +2690,20 @@ static int xdp_do_redirect_map(struct net_device *dev, struct xdp_buff *xdp,
 	if (ri->map_to_flush && ri->map_to_flush != map)
 		xdp_do_flush_map();
 
-	err = __bpf_tx_xdp(fwd, map, xdp, index);
+	if (map->map_type == BPF_MAP_TYPE_XSKMAP)
+		err = __xsk_map_redirect(map, xdp, fwd);
+	else {
+		trace_dev = fwd;
+		err = __bpf_tx_xdp(trace_dev, map, xdp, index);
+	}
 	if (unlikely(err))
 		goto err;
 
 	ri->map_to_flush = map;
-	_trace_xdp_redirect_map(dev, xdp_prog, fwd, map, index);
+	_trace_xdp_redirect_map(dev, xdp_prog, trace_dev, map, index);
 	return 0;
 err:
-	_trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map, index, err);
+	_trace_xdp_redirect_map_err(dev, xdp_prog, trace_dev, map, index, err);
 	return err;
 }
 
@@ -2725,12 +2738,14 @@ err:
 EXPORT_SYMBOL_GPL(xdp_do_redirect);
 
 int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
-			    struct bpf_prog *xdp_prog)
+				    struct xdp_buff *xdp,
+				    struct bpf_prog *xdp_prog)
 {
 	struct redirect_info *ri = this_cpu_ptr(&redirect_info);
 	unsigned long map_owner = ri->map_owner;
 	struct bpf_map *map = ri->map;
-	struct net_device *fwd = NULL;
+	void *fwd = NULL;
+	struct net_device *fwd_dev = NULL;
 	u32 index = ri->ifindex;
 	unsigned int len;
 	int err = 0;
@@ -2749,6 +2764,8 @@ int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
 			fwd = __dev_map_lookup_elem(map, index);
 		else if (map->map_type == BPF_MAP_TYPE_DEVMAP_HASH)
 			fwd = __dev_map_hash_lookup_elem(map, index);
+		else if (map->map_type == BPF_MAP_TYPE_XSKMAP)
+			fwd = __xsk_map_lookup_elem(map, index);
 	} else {
 		fwd = dev_get_by_index_rcu(dev_net(dev), index);
 	}
@@ -2757,23 +2774,33 @@ int xdp_do_generic_redirect(struct net_device *dev, struct sk_buff *skb,
 		goto err;
 	}
 
-	if (unlikely(!(fwd->flags & IFF_UP))) {
+	if (map && map->map_type == BPF_MAP_TYPE_XSKMAP) {
+		err = xsk_generic_rcv(fwd, xdp);
+		if (err)
+			goto err;
+		consume_skb(skb);
+		_trace_xdp_redirect_map(dev, xdp_prog, dev, map, index);
+		return 1;
+	}
+
+	fwd_dev = fwd;
+	if (unlikely(!(fwd_dev->flags & IFF_UP))) {
 		err = -ENETDOWN;
 		goto err;
 	}
 
-	len = fwd->mtu + fwd->hard_header_len + VLAN_HLEN;
+	len = fwd_dev->mtu + fwd_dev->hard_header_len + VLAN_HLEN;
 	if (skb->len > len) {
 		err = -EMSGSIZE;
 		goto err;
 	}
 
-	skb->dev = fwd;
-	map ? _trace_xdp_redirect_map(dev, xdp_prog, fwd, map, index)
+	skb->dev = fwd_dev;
+	map ? _trace_xdp_redirect_map(dev, xdp_prog, fwd_dev, map, index)
 		: _trace_xdp_redirect(dev, xdp_prog, index);
 	return 0;
 err:
-	map ? _trace_xdp_redirect_map_err(dev, xdp_prog, fwd, map, index, err)
+	map ? _trace_xdp_redirect_map_err(dev, xdp_prog, fwd_dev, map, index, err)
 		: _trace_xdp_redirect_err(dev, xdp_prog, index, err);
 	return err;
 }
@@ -3055,6 +3082,25 @@ static const struct bpf_func_proto bpf_sock_addr_sk_lookup_udp_proto = {
 	.arg4_type	= ARG_ANYTHING,
 	.arg5_type	= ARG_ANYTHING,
 };
+
+bool bpf_xdp_sock_is_valid_access(int off, int size, enum bpf_access_type type,
+				  struct bpf_insn_access_aux *info)
+{
+	return type == BPF_READ && off == offsetof(struct bpf_xdp_sock, queue_id) &&
+	       size == sizeof(__u32);
+}
+
+u32 bpf_xdp_sock_convert_ctx_access(enum bpf_access_type type,
+				    const struct bpf_insn *si,
+				    struct bpf_insn *insn_buf,
+				    struct bpf_prog *prog, u32 *target_size)
+{
+	BUILD_BUG_ON(FIELD_SIZEOF(struct xdp_sock, queue_id) !=
+		     FIELD_SIZEOF(struct bpf_xdp_sock, queue_id));
+	insn_buf[0] = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
+				   offsetof(struct xdp_sock, queue_id));
+	return 1;
+}
 
 bool bpf_tcp_sock_is_valid_access(int off, int size, enum bpf_access_type type,
 				  struct bpf_insn_access_aux *info)

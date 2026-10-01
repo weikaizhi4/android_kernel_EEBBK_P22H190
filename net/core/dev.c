@@ -3931,11 +3931,11 @@ static struct netdev_rx_queue *netif_get_rxqueue(struct sk_buff *skb)
 }
 
 static u32 netif_receive_generic_xdp(struct sk_buff *skb,
+				     struct xdp_buff *xdp,
 				     struct bpf_prog *xdp_prog)
 {
 	struct netdev_rx_queue *rxqueue;
 	u32 metalen, act = XDP_DROP;
-	struct xdp_buff xdp;
 	void *orig_data;
 	int hlen, off;
 	u32 mac_len;
@@ -3970,18 +3970,18 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 	 */
 	mac_len = skb->data - skb_mac_header(skb);
 	hlen = skb_headlen(skb) + mac_len;
-	xdp.data = skb->data - mac_len;
-	xdp.data_end = xdp.data + hlen;
-	xdp.data_meta = xdp.data;
-	xdp.data_hard_start = skb->data - skb_headroom(skb);
-	orig_data = xdp.data;
+	xdp->data = skb->data - mac_len;
+	xdp->data_end = xdp->data + hlen;
+	xdp->data_meta = xdp->data;
+	xdp->data_hard_start = skb->data - skb_headroom(skb);
+	orig_data = xdp->data;
 
 	rxqueue = netif_get_rxqueue(skb);
-	xdp.rxq = &rxqueue->xdp_rxq;
+	xdp->rxq = &rxqueue->xdp_rxq;
 
-	act = bpf_prog_run_xdp(xdp_prog, &xdp);
+	act = bpf_prog_run_xdp(xdp_prog, xdp);
 
-	off = xdp.data - orig_data;
+	off = xdp->data - orig_data;
 	if (off > 0)
 		__skb_pull(skb, off);
 	else if (off < 0)
@@ -3994,7 +3994,7 @@ static u32 netif_receive_generic_xdp(struct sk_buff *skb,
 		__skb_push(skb, mac_len);
 		break;
 	case XDP_PASS:
-		metalen = xdp.data - xdp.data_meta;
+		metalen = xdp->data - xdp->data_meta;
 		if (metalen)
 			skb_metadata_set(skb, metalen);
 		break;
@@ -4045,16 +4045,19 @@ static struct static_key generic_xdp_needed __read_mostly;
 int do_xdp_generic(struct bpf_prog *xdp_prog, struct sk_buff *skb)
 {
 	if (xdp_prog) {
-		u32 act = netif_receive_generic_xdp(skb, xdp_prog);
+		struct xdp_buff xdp;
+		u32 act = netif_receive_generic_xdp(skb, &xdp, xdp_prog);
 		int err;
 
 		if (act != XDP_PASS) {
 			switch (act) {
 			case XDP_REDIRECT:
 				err = xdp_do_generic_redirect(skb->dev, skb,
-							      xdp_prog);
-				if (err)
+							      &xdp, xdp_prog);
+				if (err < 0)
 					goto out_redir;
+				if (err > 0)
+					return XDP_DROP;
 			/* fallthru to submit skb */
 			case XDP_TX:
 				generic_xdp_tx(skb, xdp_prog);

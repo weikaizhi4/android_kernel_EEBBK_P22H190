@@ -47,6 +47,11 @@ struct xdp_buff {
 	struct xdp_rxq_info *rxq;
 };
 
+/* The old XDP memory model has no allocator callback to invoke here. */
+static inline void xdp_return_buff(struct xdp_buff *xdp)
+{
+}
+
 int xdp_rxq_info_reg(struct xdp_rxq_info *xdp_rxq,
 		     struct net_device *dev, u32 queue_index);
 void xdp_rxq_info_unreg(struct xdp_rxq_info *xdp_rxq);

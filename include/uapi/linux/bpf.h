@@ -122,6 +122,7 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_DEVMAP,
 	BPF_MAP_TYPE_SOCKMAP,
 	BPF_MAP_TYPE_CPUMAP,
+	BPF_MAP_TYPE_XSKMAP,
 	BPF_MAP_TYPE_SOCKHASH = 18,
 	BPF_MAP_TYPE_CGROUP_STORAGE = 19,
 	BPF_MAP_TYPE_PERCPU_CGROUP_STORAGE = 21,
@@ -1302,6 +1303,10 @@ struct bpf_sock_tuple {
 			__be16 dport;
 		} ipv6;
 	};
+};
+
+struct bpf_xdp_sock {
+	__u32 queue_id;
 };
 
 #define XDP_PACKET_HEADROOM 256
