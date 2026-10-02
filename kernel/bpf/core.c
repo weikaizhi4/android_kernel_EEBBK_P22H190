@@ -300,15 +300,46 @@ int bpf_prog_calc_tag(struct bpf_prog *fp)
 	return 0;
 }
 
+static bool bpf_is_jmp_and_has_target(const struct bpf_insn *insn)
+{
+	return BPF_CLASS(insn->code) == BPF_JMP  &&
+	       /* Call and Exit are both special jumps with no
+		* target inside the BPF instruction image.
+		*/
+	       (BPF_OP(insn->code) != BPF_CALL ||
+		insn->src_reg == BPF_PSEUDO_CALL) &&
+	       BPF_OP(insn->code) != BPF_EXIT;
+}
+
+static int bpf_adj_delta_to_off(struct bpf_insn *insn, u32 pos, u32 delta,
+				u32 curr, const bool probe_pass)
+{
+	bool pseudo_call = BPF_OP(insn->code) == BPF_CALL;
+	s64 off = pseudo_call ? insn->imm : insn->off;
+	s64 off_min = pseudo_call ? S32_MIN : S16_MIN;
+	s64 off_max = pseudo_call ? S32_MAX : S16_MAX;
+
+	if (curr < pos && curr + off + 1 > pos)
+		off += delta;
+	else if (curr > pos + delta && curr + off + 1 <= pos + delta)
+		off -= delta;
+	if (off < off_min || off > off_max)
+		return -ERANGE;
+	if (!probe_pass) {
+		if (pseudo_call)
+			insn->imm = off;
+		else
+			insn->off = off;
+	}
+	return 0;
+}
+
 static int bpf_adj_branches(struct bpf_prog *prog, u32 pos, u32 delta,
 			    const bool probe_pass)
 {
 	u32 i, insn_cnt = prog->len + (probe_pass ? delta : 0);
 	struct bpf_insn *insn = prog->insnsi;
 	int ret = 0;
-	bool pseudo_call;
-	u8 code;
-	int off;
 
 	for (i = 0; i < insn_cnt; i++, insn++) {
 		/* In the probing pass we still operate on the original,
@@ -316,38 +347,18 @@ static int bpf_adj_branches(struct bpf_prog *prog, u32 pos, u32 delta,
 		 * do any other adjustments. Therefore skip the patchlet.
 		 */
 		if (probe_pass && i == pos) {
-			i += delta + 1;
-			insn++;
+			i += delta;
 		}
 
-		code = insn->code;
-		if (BPF_CLASS(code) != BPF_JMP)
+		if (!bpf_is_jmp_and_has_target(insn))
 			continue;
-		if (BPF_OP(code) == BPF_EXIT)
-			continue;
-		if (BPF_OP(code) == BPF_CALL) {
-			if (insn->src_reg == BPF_PSEUDO_CALL)
-				pseudo_call = true;
-			else
-				continue;
-		} else {
-			pseudo_call = false;
-		}
-		off = pseudo_call ? insn->imm : insn->off;
 
 		/* Adjust offset of jmps if we cross patch boundaries. */
-		if (i < pos && i + off + 1 > pos)
-			off += delta;
-		else if (i > pos + delta && i + off + 1 <= pos + delta)
-			off -= delta;
-		if (pseudo_call)
-			insn->imm = off;
-		else
-			insn->off = off;
-
+		ret = bpf_adj_delta_to_off(insn, pos, delta, i, probe_pass);
 		if (ret)
 			break;
 	}
+
 	return ret;
 }
 
@@ -355,6 +366,7 @@ static void bpf_adj_linfo(struct bpf_prog *prog, u32 off, u32 delta)
 {
 	struct bpf_line_info *linfo;
 	u32 i, nr_linfo;
+
 	nr_linfo = prog->aux->nr_linfo;
 	if (!nr_linfo || !delta)
 		return;
@@ -362,7 +374,6 @@ static void bpf_adj_linfo(struct bpf_prog *prog, u32 off, u32 delta)
 	for (i = 0; i < nr_linfo; i++)
 		if (off < linfo[i].insn_off)
 			break;
-	/* Push all off < linfo[i].insn_off by delta */
 	for (; i < nr_linfo; i++)
 		linfo[i].insn_off += delta;
 }
@@ -371,6 +382,7 @@ struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 				       const struct bpf_insn *patch, u32 len)
 {
 	u32 insn_adj_cnt, insn_rest, insn_delta = len - 1;
+	const u32 cnt_max = S16_MAX;
 	struct bpf_prog *prog_adj;
 
 	/* Since our patchlet doesn't expand the image, we're done. */
@@ -380,6 +392,15 @@ struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 	}
 
 	insn_adj_cnt = prog->len + insn_delta;
+
+	/* Reject anything that would potentially let the insn->off
+	 * target overflow when we have excessive program expansions.
+	 * We need to probe here before we do any reallocation where
+	 * we afterwards may not fail anymore.
+	 */
+	if (insn_adj_cnt > cnt_max &&
+	    bpf_adj_branches(prog, off, insn_delta, true))
+		return NULL;
 
 	/* Several new instructions need to be inserted. Make room
 	 * for them. Likely, there's no need for a new allocation as
@@ -406,8 +427,11 @@ struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 		sizeof(*patch) * insn_rest);
 	memcpy(prog_adj->insnsi + off, patch, sizeof(*patch) * len);
 
+	/* We are guaranteed to not fail at this point, otherwise
+	 * the ship has sailed to reverse to the original state. An
+	 * overflow cannot happen at this point.
+	 */
 	BUG_ON(bpf_adj_branches(prog_adj, off, insn_delta, false));
-
 	bpf_adj_linfo(prog_adj, off, insn_delta);
 
 	return prog_adj;
