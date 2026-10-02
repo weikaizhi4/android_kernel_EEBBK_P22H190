@@ -1,4 +1,4 @@
 [submodule "KernelSU"]
 	path = KernelSU
-	url = https://github.com/ReSukiSU/ReSukiSU.git
+	url = https://github.com/weikaizhi4/ReSukiSU.git
 	branch = main
