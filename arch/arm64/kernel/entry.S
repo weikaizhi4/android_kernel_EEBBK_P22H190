@@ -380,9 +380,6 @@ alternative_else_nop_endif
 	ldp	x24, x25, [sp, #16 * 12]
 	ldp	x26, x27, [sp, #16 * 13]
 	ldp	x28, x29, [sp, #16 * 14]
-	.if	\el != 0
-	add	sp, sp, #STACK_KEEP_SIZE
-	.endif
 
 	.if	\el == 0
 alternative_if_not ARM64_UNMAP_KERNEL_AT_EL0
@@ -401,6 +398,7 @@ alternative_else_nop_endif
 #endif
 	.else
 	ldr	lr, [sp, #S_LR]
+	add	sp, sp, #STACK_KEEP_SIZE
 	add	sp, sp, #S_FRAME_SIZE		// restore sp
 	eret
 	.endif
