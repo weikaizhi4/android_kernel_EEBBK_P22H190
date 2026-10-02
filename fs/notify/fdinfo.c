@@ -104,13 +104,6 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 	inode_mark = container_of(mark, struct inotify_inode_mark, fsn_mark);
 	inode = igrab(mark->connector->inode);
 	if (inode) {
-		/*
-		 * IN_ALL_EVENTS represents all of the mask bits
-		 * that we expose to userspace.  There is at
-		 * least one bit (FS_EVENT_ON_CHILD) which is
-		 * used only internally to the kernel.
-		 */
-		u32 mask = mark->mask & IN_ALL_EVENTS;
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 		mnt = real_mount(file->f_path.mnt);
 		if (mnt->mnt_id >= DEFAULT_KSU_MNT_ID &&
@@ -131,7 +124,8 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 			seq_printf(m,
 				"inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
 				inode_mark->wd, path.dentry->d_inode->i_ino,
-				path.dentry->d_inode->i_sb->s_dev, mask);
+				path.dentry->d_inode->i_sb->s_dev,
+				inotify_mark_user_mask(mark));
 			show_mark_fhandle(m, path.dentry->d_inode);
 			seq_putc(m, '\n');
 			path_put(&path);
@@ -147,7 +141,7 @@ orig_flow:
 #endif
 		seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
 			   inode_mark->wd, inode->i_ino, inode->i_sb->s_dev,
-			   mask);
+			   inotify_mark_user_mask(mark));
 		show_mark_fhandle(m, inode);
 		seq_putc(m, '\n');
 		iput(inode);
