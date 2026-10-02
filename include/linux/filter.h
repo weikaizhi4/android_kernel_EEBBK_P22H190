@@ -77,10 +77,10 @@ struct ctl_table_header;
 
 #define BPF_ALU_REG(CLASS, OP, DST, SRC)			\
 	((struct bpf_insn) {					\
-		.code  = CLASS | BPF_OP(OP) | BPF_X,	\
-		.dst_reg = DST,				\
-		.src_reg = SRC,				\
-		.off   = 0,				\
+		.code  = CLASS | BPF_OP(OP) | BPF_X,		\
+		.dst_reg = DST,					\
+		.src_reg = SRC,					\
+		.off   = 0,					\
 		.imm   = 0 })
 
 #define BPF_ALU64_REG(OP, DST, SRC)				\
@@ -132,9 +132,9 @@ struct ctl_table_header;
 #define BPF_MOV_REG(CLASS, DST, SRC)				\
 	((struct bpf_insn) {					\
 		.code  = CLASS | BPF_MOV | BPF_X,		\
-		.dst_reg = DST,				\
-		.src_reg = SRC,				\
-		.off   = 0,				\
+		.dst_reg = DST,					\
+		.src_reg = SRC,					\
+		.off   = 0,					\
 		.imm   = 0 })
 
 #define BPF_MOV64_REG(DST, SRC)					\
@@ -174,8 +174,8 @@ struct ctl_table_header;
 #define BPF_RAW_REG(insn, DST, SRC)				\
 	((struct bpf_insn) {					\
 		.code  = (insn).code,				\
-		.dst_reg = DST,				\
-		.src_reg = SRC,				\
+		.dst_reg = DST,					\
+		.src_reg = SRC,					\
 		.off   = (insn).off,				\
 		.imm   = (insn).imm })
 
