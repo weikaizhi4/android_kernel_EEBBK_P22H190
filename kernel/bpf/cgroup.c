@@ -124,21 +124,19 @@ static int compute_effective_progs(struct cgroup *cgrp,
 	cnt = 0;
 	p = cgrp;
 	do {
-		if (cnt > 0 && !(p->bpf.flags[type] & BPF_F_ALLOW_MULTI))
-			continue;
-
-		list_for_each_entry(pl,
-				    &p->bpf.progs[type], node) {
-			if (!pl->prog)
-				continue;
-			progs->items[cnt].prog = pl->prog;
-			for_each_cgroup_storage_type(stype)
-				progs->items[cnt].cgroup_storage[stype] =
-					pl->storage[stype];
-			cnt++;
-		}
-	} while ((p = cgroup_parent(p)));
-
+		if (cnt == 0 || (p->bpf.flags[type] & BPF_F_ALLOW_MULTI))
+			list_for_each_entry(pl,
+					    &p->bpf.progs[type], node) {
+				if (!pl->prog)
+					continue;
+				progs->items[cnt].prog = pl->prog;
+				for_each_cgroup_storage_type(stype)
+					progs->items[cnt].cgroup_storage[stype] =
+						pl->storage[stype];
+				cnt++;
+			}
+		p = cgroup_parent(p);
+	} while (p);
 	rcu_assign_pointer(*array, progs);
 	return 0;
 }
