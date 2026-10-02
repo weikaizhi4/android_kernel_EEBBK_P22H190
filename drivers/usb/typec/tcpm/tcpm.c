@@ -3278,11 +3278,6 @@ static void run_state_machine(struct tcpm_port *port)
 				       tcpm_try_src(port) ? SRC_TRY
 							  : SNK_ATTACHED,
 				       0);
-		else
-			/* Wait for VBUS, but not forever */
-			/* Tab A8 code for AX6300DEV-2368 by qiaodan at 20211028 start */
-			tcpm_set_state(port, PORT_RESET, PD_T_PS_SOURCE_ON_SWAP);
-			/* Tab A8 code for AX6300DEV-2368 by qiaodan at 20211028 end */
 		break;
 
 	case SRC_TRY:

@@ -197,7 +197,7 @@ static void show_data(unsigned long addr, int nbytes, const char *name)
 			return;
 	}
 
-	printk("\n%s: %#lx:\n", name, addr);
+	printk("\n%s: %pS:\n", name, addr);
 
 	/*
 	 * round address down to a 32 bit boundary
