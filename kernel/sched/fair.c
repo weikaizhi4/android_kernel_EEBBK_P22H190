@@ -649,7 +649,7 @@ static inline u64 calc_delta_fair(u64 delta, struct sched_entity *se);
  * Specifically: avg_runtime() + 0 must result in entity_eligible() := true
  * For this to be so, the result of this function must have a left bias.
  */
-static u64 avg_vruntime(struct cfs_rq *cfs_rq)
+u64 avg_vruntime(struct cfs_rq *cfs_rq)
 {
 	struct sched_entity *curr = cfs_rq->curr;
 	s64 avg = cfs_rq->avg_vruntime;
@@ -3072,20 +3072,69 @@ static inline long calc_cfs_shares(struct cfs_rq *cfs_rq, struct task_group *tg)
 }
 # endif /* CONFIG_SMP */
 
+/*
+ * Re-weight an entity that is on the runqueue: because EEVDF keeps
+ * se->vlag = V - v_i and vd_i = ve_i + r_i/w_i, both the vruntime and the
+ * deadline have to be rescaled so that the entity's lag and its relative
+ * deadline survive the weight change.
+ */
+static void reweight_eevdf(struct sched_entity *se, u64 avruntime,
+			   unsigned long weight)
+{
+	unsigned long old_weight = se->load.weight;
+	s64 vlag, vslice;
+
+	if (avruntime != se->vruntime) {
+		vlag = entity_lag(avruntime, se);
+		vlag = div_s64(vlag * old_weight, weight);
+		se->vruntime = avruntime - vlag;
+	}
+
+	vslice = (s64)(se->deadline - avruntime);
+	vslice = div_s64(vslice * old_weight, weight);
+	se->deadline = avruntime + vslice;
+}
+
 static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
 			    unsigned long weight)
 {
+	bool curr = cfs_rq->curr == se;
+	u64 avruntime;
+
 	if (se->on_rq) {
 		/* commit outstanding execution time */
-		if (cfs_rq->curr == se)
+		if (curr)
 			update_curr(cfs_rq);
+		avruntime = avg_vruntime(cfs_rq);
 		account_entity_dequeue(cfs_rq, se);
+		if (!curr)
+			__dequeue_entity(cfs_rq, se);
+	}
+
+	if (se->on_rq) {
+		reweight_eevdf(se, avruntime, weight);
+	} else {
+		/*
+		 * Because we keep se->vlag = V - v_i, while lag_i = w_i*(V - v_i),
+		 * we need to scale se->vlag when w_i changes.
+		 */
+		se->vlag = div_s64(se->vlag * se->load.weight, weight);
 	}
 
 	update_load_set(&se->load, weight);
 
-	if (se->on_rq)
+	if (se->on_rq) {
 		account_entity_enqueue(cfs_rq, se);
+		if (!curr)
+			__enqueue_entity(cfs_rq, se);
+
+		/*
+		 * The entity's vruntime has been adjusted, so the rq-wide
+		 * min_vruntime may need updating too; do it once the
+		 * calculations above are done.
+		 */
+		update_min_vruntime(cfs_rq);
+	}
 }
 
 static inline int throttled_hierarchy(struct cfs_rq *cfs_rq);
@@ -4393,17 +4442,6 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags)
 	}
 }
 
-static void __clear_buddies_last(struct sched_entity *se)
-{
-	for_each_sched_entity(se) {
-		struct cfs_rq *cfs_rq = cfs_rq_of(se);
-		if (cfs_rq->last != se)
-			break;
-
-		cfs_rq->last = NULL;
-	}
-}
-
 static void __clear_buddies_next(struct sched_entity *se)
 {
 	for_each_sched_entity(se) {
@@ -4415,27 +4453,10 @@ static void __clear_buddies_next(struct sched_entity *se)
 	}
 }
 
-static void __clear_buddies_skip(struct sched_entity *se)
-{
-	for_each_sched_entity(se) {
-		struct cfs_rq *cfs_rq = cfs_rq_of(se);
-		if (cfs_rq->skip != se)
-			break;
-
-		cfs_rq->skip = NULL;
-	}
-}
-
 static void clear_buddies(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	if (cfs_rq->last == se)
-		__clear_buddies_last(se);
-
 	if (cfs_rq->next == se)
 		__clear_buddies_next(se);
-
-	if (cfs_rq->skip == se)
-		__clear_buddies_skip(se);
 }
 
 static __always_inline void return_cfs_rq_runtime(struct cfs_rq *cfs_rq);
@@ -8431,12 +8452,6 @@ static void set_next_buddy(struct sched_entity *se)
 	}
 }
 
-static void set_skip_buddy(struct sched_entity *se)
-{
-	for_each_sched_entity(se)
-		cfs_rq_of(se)->skip = se;
-}
-
 /*
  * Preempt the current task with a newly woken task if needed:
  */
@@ -8692,7 +8707,7 @@ static void yield_task_fair(struct rq *rq)
 		rq_clock_skip_update(rq, true);
 	}
 
-	set_skip_buddy(se);
+	set_next_buddy(se);
 }
 
 static bool yield_to_task_fair(struct rq *rq, struct task_struct *p, bool preempt)
@@ -8893,8 +8908,7 @@ static int task_hot(struct task_struct *p, struct lb_env *env)
 	 * Buddy candidates are cache hot:
 	 */
 	if (sched_feat(CACHE_HOT_BUDDY) && env->dst_rq->nr_running &&
-			(&p->se == cfs_rq_of(&p->se)->next ||
-			 &p->se == cfs_rq_of(&p->se)->last))
+			(&p->se == cfs_rq_of(&p->se)->next))
 		return 1;
 
 	if (sysctl_sched_migration_cost == -1)

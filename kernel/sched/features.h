@@ -1,30 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Only give sleepers 50% of their service deficit. This allows
- * them to run sooner, but does not allow tons of sleepers to
- * rip the spread apart.
- */
-SCHED_FEAT(GENTLE_FAIR_SLEEPERS, true)
-
-/*
- * Place new tasks ahead so that they do not starve already running
- * tasks
- */
-SCHED_FEAT(START_DEBIT, true)
-
-/*
  * Prefer to schedule the task we woke last (assuming it failed
  * wakeup-preemption), since its likely going to consume data we
  * touched, increases cache locality.
  */
 SCHED_FEAT(NEXT_BUDDY, false)
-
-/*
- * Prefer to schedule the task that ran last (when we did
- * wake-preempt) as that likely will touch the same data, increases
- * cache locality.
- */
-SCHED_FEAT(LAST_BUDDY, true)
 
 /*
  * Consider buddies to be cache hot, decreases the likelyness of a

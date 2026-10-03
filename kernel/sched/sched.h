@@ -442,7 +442,7 @@ struct cfs_rq {
 	 * 'curr' points to currently running entity on this cfs_rq.
 	 * It is set to NULL otherwise (i.e when none are currently running).
 	 */
-	struct sched_entity *curr, *next, *last, *skip;
+	struct sched_entity *curr, *next;
 
 #ifdef	CONFIG_SCHED_DEBUG
 	unsigned int nr_spread_over;
@@ -1663,6 +1663,9 @@ extern const struct sched_class stop_sched_class;
 extern const struct sched_class dl_sched_class;
 extern const struct sched_class rt_sched_class;
 extern const struct sched_class fair_sched_class;
+
+/* EEVDF: weighted average vruntime of the entities on a cfs_rq */
+extern u64 avg_vruntime(struct cfs_rq *cfs_rq);
 extern const struct sched_class idle_sched_class;
 
 
