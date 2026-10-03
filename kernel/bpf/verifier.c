@@ -208,6 +208,7 @@ struct bpf_call_arg_meta {
 	int access_size;
 	s64 msize_smax_value;
 	u64 msize_umax_value;
+	u32 mem_size;
 	int ptr_id;
 	int func_id;
 };
@@ -282,17 +283,19 @@ static bool reg_type_may_be_null(enum bpf_reg_type type)
 	return type == PTR_TO_MAP_VALUE_OR_NULL ||
 	       type == PTR_TO_SOCKET_OR_NULL ||
 	       type == PTR_TO_SOCK_COMMON_OR_NULL ||
-	       type == PTR_TO_TCP_SOCK_OR_NULL;
+	       type == PTR_TO_TCP_SOCK_OR_NULL ||
+	       type == PTR_TO_MEM_OR_NULL;
 }
 
 static bool type_is_refcounted(enum bpf_reg_type type)
 {
-	return type == PTR_TO_SOCKET;
+	return type == PTR_TO_SOCKET || type == PTR_TO_MEM;
 }
 
 static bool type_is_refcounted_or_null(enum bpf_reg_type type)
 {
-	return type == PTR_TO_SOCKET || type == PTR_TO_SOCKET_OR_NULL;
+	return type == PTR_TO_SOCKET || type == PTR_TO_SOCKET_OR_NULL ||
+	       type == PTR_TO_MEM || type == PTR_TO_MEM_OR_NULL;
 }
 
 static bool reg_is_refcounted(const struct bpf_reg_state *reg)
@@ -322,13 +325,16 @@ static bool arg_type_is_refcounted(enum bpf_arg_type type)
  */
 static bool is_release_function(enum bpf_func_id func_id)
 {
-	return func_id == BPF_FUNC_sk_release;
+	return func_id == BPF_FUNC_sk_release ||
+	       func_id == BPF_FUNC_ringbuf_submit ||
+	       func_id == BPF_FUNC_ringbuf_discard;
 }
 
 static bool is_acquire_function(enum bpf_func_id func_id)
 {
 	return func_id == BPF_FUNC_sk_lookup_tcp ||
-		func_id == BPF_FUNC_sk_lookup_udp;
+		func_id == BPF_FUNC_sk_lookup_udp ||
+		func_id == BPF_FUNC_ringbuf_reserve;
 }
 
 /* string representation of 'enum bpf_reg_type' */
@@ -352,6 +358,8 @@ static const char * const reg_type_str[] = {
 	[PTR_TO_TCP_SOCK_OR_NULL] = "tcp_sock_or_null",
 	[PTR_TO_TP_BUFFER]	= "tp_buffer",
 	[PTR_TO_XDP_SOCK]	= "xdp_sock",
+	[PTR_TO_MEM]		= "mem",
+	[PTR_TO_MEM_OR_NULL]	= "mem_or_null",
 };
 
 static void print_liveness(struct bpf_verifier_env *env,
@@ -860,6 +868,7 @@ static void __mark_reg_unknown(struct bpf_reg_state *reg)
 	reg->type = SCALAR_VALUE;
 	reg->id = 0;
 	reg->off = 0;
+	reg->mem_size = 0;
 	reg->var_off = tnum_unknown;
 	reg->frameno = 0;
 	__mark_reg_unbounded(reg);
@@ -1955,6 +1964,65 @@ static void coerce_reg_to_size(struct bpf_reg_state *reg, int size)
  * if t==write && value_regno==-1, some unknown value is stored into memory
  * if t==read && value_regno==-1, don't care what we read from memory
  */
+static int __check_mem_access(struct bpf_verifier_env *env, int regno, int off,
+			      int size, u32 mem_size, bool zero_size_allowed)
+{
+	if (off < 0 || size < 0 || off + size > mem_size) {
+		verbose(env, "invalid access to memory, mem_size=%u off=%d size=%d\n",
+			mem_size, off, size);
+		return -EACCES;
+	}
+	return 0;
+}
+
+static int check_mem_region_access(struct bpf_verifier_env *env, u32 regno,
+				   int off, int size, u32 mem_size,
+				   bool zero_size_allowed)
+{
+	struct bpf_verifier_state *vstate = env->cur_state;
+	struct bpf_func_state *state = vstate->frame[vstate->curframe];
+	struct bpf_reg_state *reg = &state->regs[regno];
+	int err;
+
+	/* We may have adjusted the register pointing to memory region, so we
+	 * need to try adding each of min_value and max_value to off
+	 * to make sure our theoretical access will be safe.
+	 */
+	if (env->log.level)
+		print_verifier_state(env, state);
+
+	if (reg->smin_value < 0 &&
+	    (reg->smin_value == S64_MIN ||
+	     (off + reg->smin_value != (s64)(s32)(off + reg->smin_value)) ||
+	      reg->smin_value + off < 0)) {
+		verbose(env, "R%d min value is negative, either use unsigned index or do a if (index >=0) check.\n",
+			regno);
+		return -EACCES;
+	}
+	err = __check_mem_access(env, regno, reg->smin_value + off, size,
+				 mem_size, zero_size_allowed);
+	if (err) {
+		verbose(env, "R%d min value is outside of the allowed memory range\n",
+			regno);
+		return err;
+	}
+
+	if (reg->umax_value >= BPF_MAX_VAR_OFF) {
+		verbose(env, "R%d unbounded memory access, make sure to bounds check any such access\n",
+			regno);
+		return -EACCES;
+	}
+	err = __check_mem_access(env, regno, reg->umax_value + off, size,
+				 mem_size, zero_size_allowed);
+	if (err) {
+		verbose(env, "R%d max value is outside of the allowed memory range\n",
+			regno);
+		return err;
+	}
+
+	return 0;
+}
+
 static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regno,
 			    int off, int bpf_size, enum bpf_access_type t,
 			    int value_regno, bool strict_alignment_once)
@@ -1984,6 +2052,18 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		}
 
 		err = check_map_access(env, regno, off, size);
+		if (!err && t == BPF_READ && value_regno >= 0)
+			mark_reg_unknown(env, regs, value_regno);
+
+	} else if (reg->type == PTR_TO_MEM) {
+		if (t == BPF_WRITE && value_regno >= 0 &&
+		    is_pointer_value(env, value_regno)) {
+			verbose(env, "R%d leaks addr into mem\n", value_regno);
+			return -EACCES;
+		}
+
+		err = check_mem_region_access(env, regno, off, size,
+					      reg->mem_size, false);
 		if (!err && t == BPF_READ && value_regno >= 0)
 			mark_reg_unknown(env, regs, value_regno);
 
@@ -2207,6 +2287,10 @@ static int check_helper_mem_access(struct bpf_verifier_env *env, int regno,
 		return check_flow_keys_access(env, reg->off, access_size);
 	case PTR_TO_MAP_VALUE:
 		return check_map_access(env, regno, reg->off, access_size);
+	case PTR_TO_MEM:
+		return check_mem_region_access(env, regno, reg->off,
+					       access_size, reg->mem_size,
+					       zero_size_allowed);
 	default: /* scalar_value|ptr_to_stack or invalid ptr */
 		return check_stack_boundary(env, regno, access_size,
 					    zero_size_allowed, meta);
@@ -2311,6 +2395,11 @@ static bool arg_type_is_mem_size(enum bpf_arg_type type)
 	       type == ARG_CONST_SIZE_OR_ZERO;
 }
 
+static bool arg_type_is_alloc_size(enum bpf_arg_type type)
+{
+	return type == ARG_CONST_ALLOC_SIZE_OR_ZERO;
+}
+
 static bool arg_type_is_int_ptr(enum bpf_arg_type type)
 {
 	return type == ARG_PTR_TO_INT ||
@@ -2368,7 +2457,8 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			 type != expected_type)
 			goto err_type;
 	} else if (arg_type == ARG_CONST_SIZE ||
-		   arg_type == ARG_CONST_SIZE_OR_ZERO) {
+		   arg_type == ARG_CONST_SIZE_OR_ZERO ||
+		   arg_type == ARG_CONST_ALLOC_SIZE_OR_ZERO) {
 		expected_type = SCALAR_VALUE;
 		if (type != expected_type)
 			goto err_type;
@@ -2413,6 +2503,14 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 			verbose(env, "verifier internal error\n");
 			return -EFAULT;
 		}
+	} else if (arg_type == ARG_PTR_TO_ALLOC_MEM ||
+		   arg_type == ARG_PTR_TO_ALLOC_MEM_OR_NULL) {
+		expected_type = PTR_TO_MEM;
+		if (register_is_null(reg) &&
+		    arg_type == ARG_PTR_TO_ALLOC_MEM_OR_NULL)
+			/* allowed, like ARG_PTR_TO_MEM_OR_NULL */;
+		else if (type != expected_type)
+			goto err_type;
 	} else if (arg_type_is_mem_ptr(arg_type)) {
 		expected_type = PTR_TO_STACK;
 		/* One exception here. In case function allows for NULL to be
@@ -2517,6 +2615,27 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		err = check_helper_mem_access(env, regno - 1,
 					      reg->umax_value,
 					      zero_size_allowed, meta);
+	} else if (arg_type_is_alloc_size(arg_type)) {
+		if (!tnum_is_const(reg->var_off)) {
+			verbose(env, "R%d unbounded size, use 'var &= const' or 'if (var < const)'\n",
+				regno);
+			return -EACCES;
+		}
+		meta->mem_size = reg->var_off.value;
+	} else if (arg_type == ARG_PTR_TO_ALLOC_MEM ||
+		   arg_type == ARG_PTR_TO_ALLOC_MEM_OR_NULL) {
+		/* The register type was validated above and the memory itself
+		 * was validated when the pointer was returned by a helper, so
+		 * just remember the reference for release_reference().
+		 */
+		if (type == PTR_TO_MEM) {
+			if (meta->ptr_id || !reg->id) {
+				verbose(env, "verifier internal error: mismatched references meta=%d, reg=%d\n",
+					meta->ptr_id, reg->id);
+				return -EFAULT;
+			}
+			meta->ptr_id = reg->id;
+		}
 	} else if (arg_type_is_int_ptr(arg_type)) {
 		int size = int_ptr_type_to_size(arg_type);
 		err = check_helper_mem_access(env, regno, size, false, meta);
@@ -3123,6 +3242,20 @@ static int check_helper_call(struct bpf_verifier_env *env, int func_id, int insn
 		mark_reg_known_zero(env, regs, BPF_REG_0);
 		regs[BPF_REG_0].type = PTR_TO_TCP_SOCK_OR_NULL;
 		regs[BPF_REG_0].id = ++env->id_gen;
+	} else if (fn->ret_type == RET_PTR_TO_ALLOC_MEM_OR_NULL) {
+		mark_reg_known_zero(env, regs, BPF_REG_0);
+		regs[BPF_REG_0].type = PTR_TO_MEM_OR_NULL;
+		regs[BPF_REG_0].mem_size = meta.mem_size;
+		if (is_acquire_function(func_id)) {
+			int id = acquire_reference_state(env, insn_idx);
+			if (id < 0)
+				return id;
+			/* For release_reference() */
+			regs[BPF_REG_0].id = id;
+		} else {
+			/* For mark_ptr_or_null_reg() */
+			regs[BPF_REG_0].id = ++env->id_gen;
+		}
 	} else {
 		verbose(env, "unknown return type %d of func %s#%d\n",
 			fn->ret_type, func_id_name(func_id), func_id);
@@ -4480,6 +4613,8 @@ static void mark_ptr_or_null_reg(struct bpf_func_state *state,
 			reg->type = PTR_TO_SOCK_COMMON;
 		} else if (reg->type == PTR_TO_TCP_SOCK_OR_NULL) {
 			reg->type = PTR_TO_TCP_SOCK;
+		} else if (reg->type == PTR_TO_MEM_OR_NULL) {
+			reg->type = PTR_TO_MEM;
 		}
 
 		if (is_null || !(reg_is_refcounted(reg) ||
@@ -5543,6 +5678,8 @@ static bool regsafe(struct bpf_reg_state *rold, struct bpf_reg_state *rcur,
 	case PTR_TO_TCP_SOCK:
 	case PTR_TO_TCP_SOCK_OR_NULL:
 	case PTR_TO_XDP_SOCK:
+	case PTR_TO_MEM:
+	case PTR_TO_MEM_OR_NULL:
 		/* Only valid matches are exact, which memcmp() above
 		 * would have accepted
 		 */

@@ -64,6 +64,8 @@ struct bpf_reg_state {
 	 * same reference to the socket, to determine proper reference freeing.
 	 */
 	u32 id;
+	/* For PTR_TO_MEM, the size of the memory region */
+	u32 mem_size;
 	/* Ordering of fields matters.  See states_equal() */
 	/* For scalar types (SCALAR_VALUE), this represents our knowledge of
 	 * the actual value.

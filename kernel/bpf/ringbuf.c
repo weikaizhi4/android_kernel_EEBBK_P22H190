@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Ring buffer map, backported from the mainline 5.8 implementation.
- *
- * The in-kernel reservation API (bpf_ringbuf_reserve()/submit()/discard())
- * needs the PTR_TO_MEM register type which this kernel does not have yet,
- * so only the copy-based bpf_ringbuf_output() and bpf_ringbuf_query()
- * helpers are exposed for now.
  */
 #include <linux/bpf.h>
 #include <linux/btf.h>
@@ -382,6 +377,25 @@ static void *__bpf_ringbuf_reserve(struct bpf_ringbuf *rb, u64 size)
 	return (void *)hdr + BPF_RINGBUF_HDR_SZ;
 }
 
+BPF_CALL_3(bpf_ringbuf_reserve, struct bpf_map *, map, u64, size, u64, flags)
+{
+	struct bpf_ringbuf_map *rb_map;
+
+	if (unlikely(flags))
+		return 0;
+
+	rb_map = container_of(map, struct bpf_ringbuf_map, map);
+	return (unsigned long)__bpf_ringbuf_reserve(rb_map->rb, size);
+}
+
+const struct bpf_func_proto bpf_ringbuf_reserve_proto = {
+	.func		= bpf_ringbuf_reserve,
+	.ret_type	= RET_PTR_TO_ALLOC_MEM_OR_NULL,
+	.arg1_type	= ARG_CONST_MAP_PTR,
+	.arg2_type	= ARG_CONST_ALLOC_SIZE_OR_ZERO,
+	.arg3_type	= ARG_ANYTHING,
+};
+
 static void bpf_ringbuf_commit(void *sample, u64 flags, bool discard)
 {
 	unsigned long rec_pos, cons_pos;
@@ -409,6 +423,32 @@ static void bpf_ringbuf_commit(void *sample, u64 flags, bool discard)
 	else if (cons_pos == rec_pos && !(flags & BPF_RB_NO_WAKEUP))
 		irq_work_queue(&rb->work);
 }
+
+BPF_CALL_2(bpf_ringbuf_submit, void *, sample, u64, flags)
+{
+	bpf_ringbuf_commit(sample, flags, false /* discard */);
+	return 0;
+}
+
+const struct bpf_func_proto bpf_ringbuf_submit_proto = {
+	.func		= bpf_ringbuf_submit,
+	.ret_type	= RET_VOID,
+	.arg1_type	= ARG_PTR_TO_ALLOC_MEM,
+	.arg2_type	= ARG_ANYTHING,
+};
+
+BPF_CALL_2(bpf_ringbuf_discard, void *, sample, u64, flags)
+{
+	bpf_ringbuf_commit(sample, flags, true /* discard */);
+	return 0;
+}
+
+const struct bpf_func_proto bpf_ringbuf_discard_proto = {
+	.func		= bpf_ringbuf_discard,
+	.ret_type	= RET_VOID,
+	.arg1_type	= ARG_PTR_TO_ALLOC_MEM,
+	.arg2_type	= ARG_ANYTHING,
+};
 
 BPF_CALL_4(bpf_ringbuf_output, struct bpf_map *, map, void *, data, u64, size,
 	   u64, flags)
