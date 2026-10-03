@@ -288,4 +288,39 @@ rb_erase_augmented_cached(struct rb_node *node, struct rb_root_cached *root,
 		__rb_erase_color(rebalance, &root->rb_root, augment->rotate);
 }
 
+/**
+ * rb_add_augmented_cached() - insert @node into the cached tree @tree
+ * @node: node to insert
+ * @tree: tree to insert @node into
+ * @less: operator defining the (partial) node order
+ * @augment: callback to update the augmented data
+ *
+ * Returns @node when it is the new leftmost, or NULL.
+ */
+static __always_inline struct rb_node *
+rb_add_augmented_cached(struct rb_node *node, struct rb_root_cached *tree,
+			bool (*less)(struct rb_node *, const struct rb_node *),
+			const struct rb_augment_callbacks *augment)
+{
+	struct rb_node **link = &tree->rb_root.rb_node;
+	struct rb_node *parent = NULL;
+	bool leftmost = true;
+
+	while (*link) {
+		parent = *link;
+		if (less(node, parent)) {
+			link = &parent->rb_left;
+		} else {
+			link = &parent->rb_right;
+			leftmost = false;
+		}
+	}
+
+	rb_link_node(node, parent, link);
+	augment->propagate(parent, NULL); /* suboptimal */
+	rb_insert_augmented_cached(node, tree, leftmost, augment);
+
+	return leftmost ? node : NULL;
+}
+
 #endif	/* _LINUX_RBTREE_AUGMENTED_H */
