@@ -11,6 +11,9 @@
 
 #include <linux/capability.h>
 #include <linux/workqueue.h>
+
+struct vm_area_struct;
+struct poll_table_struct;
 #include <linux/file.h>
 #include <linux/percpu.h>
 #include <linux/err.h>
@@ -61,6 +64,10 @@ struct bpf_map_ops {
 				     u64 *imm, u32 off);
 	int (*map_direct_value_meta)(const struct bpf_map *map,
 				     u64 imm, u32 *off);
+
+	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
+	unsigned int (*map_poll)(struct bpf_map *map, struct file *filp,
+				 struct poll_table_struct *pts);
 };
 
 struct bpf_map {
@@ -160,6 +167,10 @@ int map_check_no_btf(const struct bpf_map *map,
 		     const struct btf_type *value_type);
 
 extern const struct bpf_map_ops bpf_map_offload_ops;
+extern const struct bpf_map_ops ringbuf_map_ops;
+
+extern const struct bpf_func_proto bpf_ringbuf_output_proto;
+extern const struct bpf_func_proto bpf_ringbuf_query_proto;
 
 /* function argument constraints */
 enum bpf_arg_type {

@@ -3809,10 +3809,14 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return &bpf_ktime_get_ns_proto;
 	case BPF_FUNC_ktime_get_boot_ns:
 		return &bpf_ktime_get_boot_ns_proto;
+	case BPF_FUNC_ringbuf_output:
+		return &bpf_ringbuf_output_proto;
+	case BPF_FUNC_ringbuf_query:
+		return &bpf_ringbuf_query_proto;
 	default:
 		break;
 	}
-	if (!capable(CAP_SYS_ADMIN))
+	if (!bpf_capable())
 		return NULL;
 	switch (func_id) {
 	case BPF_FUNC_spin_lock:

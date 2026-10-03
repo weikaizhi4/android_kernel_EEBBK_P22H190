@@ -65,3 +65,4 @@ BPF_MAP_TYPE(BPF_MAP_TYPE_CPUMAP, cpu_map_ops)
 BPF_MAP_TYPE(BPF_MAP_TYPE_XSKMAP, xsk_map_ops)
 #endif
 #endif
+BPF_MAP_TYPE(BPF_MAP_TYPE_RINGBUF, ringbuf_map_ops)
