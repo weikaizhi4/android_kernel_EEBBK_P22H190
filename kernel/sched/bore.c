@@ -208,6 +208,19 @@ int sched_bore_update_handler(struct ctl_table *table, int write,
 	return 0;
 }
 
+int sched_bore_min_slice_handler(struct ctl_table *table, int write,
+	void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret = proc_douintvec_minmax(table, write, buffer, lenp, ppos);
+
+	if (ret || !write)
+		return ret;
+
+	sched_update_min_base_slice();
+
+	return 0;
+}
+
 #define for_each_child(p, t) \
 	list_for_each_entry(t, &(p)->children, sibling)
 

@@ -139,6 +139,7 @@ static unsigned int bore_three = 3;
 static unsigned int bore_maxval_u8 = 255;
 static unsigned int bore_maxval_12_bits = 4095;
 static unsigned int bore_sixty_four = 64;
+static unsigned int bore_max_min_base_slice = 100000000;
 #endif
 static int __maybe_unused one = 1;
 static int __maybe_unused two = 2;
@@ -373,6 +374,24 @@ static struct ctl_table kern_table[] = {
 		.extra1		= &min_sched_granularity_ns,
 		.extra2		= &max_sched_granularity_ns,
 	},
+#ifdef CONFIG_SCHED_BORE
+	{
+		.procname	= "sched_base_slice",
+		.data		= &sysctl_sched_base_slice,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0444,
+		.proc_handler	= proc_douintvec,
+	},
+	{
+		.procname	= "sched_min_base_slice",
+		.data		= &sysctl_sched_min_base_slice,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= sched_bore_min_slice_handler,
+		.extra1		= &bore_zero,
+		.extra2		= &bore_max_min_base_slice,
+	},
+#else
 	{
 		.procname	= "sched_base_slice",
 		.data		= &sysctl_sched_base_slice,
@@ -382,6 +401,7 @@ static struct ctl_table kern_table[] = {
 		.extra1		= &min_sched_granularity_ns,
 		.extra2		= &max_sched_granularity_ns,
 	},
+#endif
 	{
 		.procname	= "sched_latency_ns",
 		.data		= &sysctl_sched_latency,
