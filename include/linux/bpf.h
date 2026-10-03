@@ -9,6 +9,7 @@
 
 #include <uapi/linux/bpf.h>
 
+#include <linux/capability.h>
 #include <linux/workqueue.h>
 #include <linux/file.h>
 #include <linux/percpu.h>
@@ -545,6 +546,31 @@ void bpf_map_area_free(void *base);
 void bpf_map_init_from_attr(struct bpf_map *map, union bpf_attr *attr);
 
 extern int sysctl_unprivileged_bpf_disabled;
+
+static inline bool bpf_allow_ptr_leaks(void)
+{
+	return perfmon_capable();
+}
+
+static inline bool bpf_allow_uninit_stack(void)
+{
+	return perfmon_capable();
+}
+
+static inline bool bpf_allow_ptr_to_map_access(void)
+{
+	return perfmon_capable();
+}
+
+static inline bool bpf_bypass_spec_v1(void)
+{
+	return perfmon_capable();
+}
+
+static inline bool bpf_bypass_spec_v4(void)
+{
+	return perfmon_capable();
+}
 
 int bpf_map_new_fd(struct bpf_map *map, int flags);
 int bpf_prog_new_fd(struct bpf_prog *prog);

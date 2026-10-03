@@ -7197,7 +7197,7 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 	if (!env->explored_states)
 		goto skip_full_check;
 
-	env->allow_ptr_leaks = capable(CAP_SYS_ADMIN);
+	env->allow_ptr_leaks = bpf_allow_ptr_leaks();
 
 	ret = check_cfg(env);
 	if (ret < 0)
@@ -7324,7 +7324,7 @@ int bpf_analyzer(struct bpf_prog *prog, const struct bpf_ext_analyzer_ops *ops,
 	if (ret < 0)
 		goto skip_full_check;
 
-	env->allow_ptr_leaks = capable(CAP_SYS_ADMIN);
+	env->allow_ptr_leaks = bpf_allow_ptr_leaks();
 
 	ret = do_check(env);
 	if (env->cur_state) {

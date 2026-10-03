@@ -366,8 +366,27 @@ struct vfs_ns_cap_data {
 
 #define CAP_AUDIT_READ		37
 
+/*
+ * CAP_PERFMON restricts the following operations:
+ *  - use of performance monitoring and observability mechanisms
+ *    (perf_event_open(), BPF program loading and attaching that is
+ *    oriented at system performance and observability)
+ * It is a superset of operations covered by CAP_BPF.
+ */
+#define CAP_PERFMON		38
 
-#define CAP_LAST_CAP         CAP_AUDIT_READ
+/*
+ * CAP_BPF allows the following BPF operations:
+ *  - loading of BPF programs with the exception of tracing programs
+ *    (which additionally require CAP_PERFMON)
+ *  - creating BPF maps, looking up and updating map elements
+ *  - attaching BPF programs to network devices/cgroup/sockets
+ * CAP_SYS_ADMIN still grants all of the above for backward compatibility.
+ */
+#define CAP_BPF			39
+
+
+#define CAP_LAST_CAP         CAP_BPF
 
 #define cap_valid(x) ((x) >= 0 && (x) <= CAP_LAST_CAP)
 
