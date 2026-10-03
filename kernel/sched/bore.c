@@ -43,6 +43,17 @@ static inline struct task_struct *bore_task_of(struct sched_entity *se)
 #define bore_entity_is_task(se)	1
 #endif
 
+/*
+ * Must match fair.c's cfs_rq_of(): with CONFIG_FAIR_GROUP_SCHED a task can
+ * live in a child cfs_rq, and re-weighting it against the root cfs_rq would
+ * corrupt that runqueue's load/nr_running accounting and its rbtree.
+ */
+#ifdef CONFIG_FAIR_GROUP_SCHED
+static inline struct cfs_rq *bore_cfs_rq_of(struct sched_entity *se)
+{
+	return se->cfs_rq;
+}
+#else
 static inline struct cfs_rq *bore_cfs_rq_of(struct sched_entity *se)
 {
 	struct task_struct *p = bore_task_of(se);
@@ -50,6 +61,7 @@ static inline struct cfs_rq *bore_cfs_rq_of(struct sched_entity *se)
 
 	return &rq->cfs;
 }
+#endif
 
 #define MAX_BURST_PENALTY (39U <<2)
 

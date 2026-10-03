@@ -8633,6 +8633,16 @@ again:
 		}
 
 		se = pick_eevdf(cfs_rq);
+		if (unlikely(!se)) {
+			/*
+			 * pick_eevdf() can decline to pick anything (for
+			 * example when the runqueue state races with the
+			 * fast path above). Fall back to the full path, which
+			 * re-establishes cfs_rq->curr and the tree first.
+			 */
+			cfs_rq = &rq->cfs;
+			goto simple;
+		}
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
 
@@ -8677,6 +8687,10 @@ simple:
 
 	do {
 		se = pick_eevdf(cfs_rq);
+		if (unlikely(!se))
+			se = __pick_first_entity(cfs_rq);
+		if (unlikely(!se))
+			goto idle;
 		set_next_entity(cfs_rq, se);
 		cfs_rq = group_cfs_rq(se);
 	} while (cfs_rq);
