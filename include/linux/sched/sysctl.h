@@ -21,6 +21,10 @@ enum { sysctl_hung_task_timeout_secs = 0 };
 
 extern unsigned int sysctl_sched_latency;
 extern unsigned int sysctl_sched_min_granularity;
+#ifdef CONFIG_SCHED_BORE
+extern unsigned int sysctl_sched_min_base_slice;
+extern void sched_update_min_base_slice(void);
+#endif
 extern unsigned int sysctl_sched_base_slice;
 extern unsigned int sysctl_sched_sync_hint_enable;
 extern unsigned int sysctl_sched_cstate_aware;

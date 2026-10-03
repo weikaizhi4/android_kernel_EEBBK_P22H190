@@ -31,5 +31,6 @@ obj-$(CONFIG_CPU_FREQ) += cpufreq.o
 obj-$(CONFIG_CPU_FREQ_GOV_SCHEDUTIL) += cpufreq_schedutil.o
 obj-$(CONFIG_MEMBARRIER) += membarrier.o
 obj-$(CONFIG_PSI) += psi.o
+obj-$(CONFIG_SCHED_BORE) += bore.o
 obj-$(CONFIG_SPRD_CORE_CTL) += sprd_core_ctl.o
 GCOV_PROFILE_sprd_core_ctl.o := $(CONFIG_SPRD_CORE_CTL_GCOV)

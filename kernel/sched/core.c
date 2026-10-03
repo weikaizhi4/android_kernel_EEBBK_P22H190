@@ -6,6 +6,7 @@
  *  Copyright (C) 1991-2002  Linus Torvalds
  */
 #include <linux/sched.h>
+#include <linux/sched/bore.h>
 #include <linux/sched/clock.h>
 #include <uapi/linux/sched/types.h>
 #include <linux/sched/loadavg.h>
@@ -6276,6 +6277,10 @@ void __init sched_init(void)
 	unsigned long alloc_size = 0, ptr;
 
 	sched_clock_init();
+#ifdef CONFIG_SCHED_BORE
+	sched_bore_init();
+#endif
+
 	wait_bit_init();
 
 #ifdef CONFIG_FAIR_GROUP_SCHED

@@ -29,6 +29,7 @@
 #include <linux/cpuidle.h>
 #include <linux/slab.h>
 #include <linux/rbtree_augmented.h>
+#include <linux/sched/bore.h>
 #include <linux/profile.h>
 #include <linux/interrupt.h>
 #include <linux/mempolicy.h>
@@ -77,7 +78,11 @@ unsigned int sysctl_sched_cstate_aware = 1;
  *
  * (default SCHED_TUNABLESCALING_LOG = *(1+ilog(ncpus))
  */
+#ifdef CONFIG_SCHED_BORE
+enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_NONE;
+#else
 enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
+#endif
 
 /*
  * Minimal preemption granularity for CPU-bound tasks:
@@ -85,8 +90,14 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_L
  * (default: 0.75 msec * (1 + ilog(ncpus)), units: nanoseconds)
  */
 unsigned int sysctl_sched_min_granularity		= 750000ULL;
+#ifdef CONFIG_SCHED_BORE
+static const unsigned int nsecs_per_tick		= 1000000000ULL / HZ;
+unsigned int sysctl_sched_min_base_slice		= CONFIG_MIN_BASE_SLICE_NS;
+unsigned int sysctl_sched_base_slice			= 0;
+#else
 unsigned int sysctl_sched_base_slice			= 750000ULL;
 static unsigned int normalized_sysctl_sched_base_slice	= 750000ULL;
+#endif
 unsigned int normalized_sysctl_sched_min_granularity	= 750000ULL;
 
 /*
@@ -201,6 +212,14 @@ static unsigned int get_update_sysctl_factor(void)
 	return factor;
 }
 
+#ifdef CONFIG_SCHED_BORE
+static void update_sysctl(void)
+{
+	sysctl_sched_base_slice = nsecs_per_tick *
+		max(1U, DIV_ROUND_UP(sysctl_sched_min_base_slice, nsecs_per_tick));
+}
+void sched_update_min_base_slice(void) { update_sysctl(); }
+#else
 static void update_sysctl(void)
 {
 	unsigned int factor = get_update_sysctl_factor();
@@ -213,6 +232,7 @@ static void update_sysctl(void)
 	SET_SYSCTL(sched_wakeup_granularity);
 #undef SET_SYSCTL
 }
+#endif
 
 void sched_init_granularity(void)
 {
@@ -3095,8 +3115,8 @@ static void reweight_eevdf(struct sched_entity *se, u64 avruntime,
 	se->deadline = avruntime + vslice;
 }
 
-static void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
-			    unsigned long weight)
+void reweight_entity(struct cfs_rq *cfs_rq, struct sched_entity *se,
+		     unsigned long weight)
 {
 	bool curr = cfs_rq->curr == se;
 	u64 avruntime;
