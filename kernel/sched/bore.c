@@ -98,7 +98,7 @@ static inline u8 effective_prio(struct task_struct *p)
 
 	if (likely(sched_bore))
 		prio += p->se.burst_score;
-	return min(39, prio);
+	return min_t(u8, 39, prio);
 }
 
 void update_burst_score(struct sched_entity *se)
