@@ -1864,6 +1864,10 @@ static inline unsigned long sched_get_rt_rq_util(int cpu)
 
 #if defined(CONFIG_IRQ_TIME_ACCOUNTING) || \
 	defined(CONFIG_PARAVIRT_TIME_ACCOUNTING)
+extern unsigned long cpu_util_cfs(int cpu);
+extern unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
+					unsigned long *min, unsigned long *max);
+
 static inline unsigned long cpu_util_irq(struct rq *rq)
 {
 	return rq->avg_irq.util_avg;

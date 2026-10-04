@@ -6332,6 +6332,101 @@ static inline unsigned long cpu_util(int cpu)
 	return min_t(unsigned long, util, capacity_orig_of(cpu));
 }
 
+/*
+ * cpu_util_cfs() - the CFS utilization of @cpu. Name used by the 6.12
+ * schedutil; this tree calls the same thing cpu_util().
+ */
+unsigned long cpu_util_cfs(int cpu)
+{
+	return cpu_util(cpu);
+}
+
+/*
+ * effective_cpu_util() - aggregate the utilization signals of @cpu.
+ *
+ * Backported from 6.12 with the parts this tree does not have left out:
+ * there is no uclamp (so the min/max hints are plain) and struct rq has no
+ * avg_rt/avg_dl PELT signals, so only the CFS and IRQ pressure
+ * contributions are accounted for.
+ */
+unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
+				 unsigned long *min, unsigned long *max)
+{
+	unsigned long util, irq, scale;
+	struct rq *rq = cpu_rq(cpu);
+
+	/*
+	 * This tree's arch_scale_cpu_capacity() still has the 4.14
+	 * (struct sched_domain *, int) signature, so use the per-rq
+	 * original capacity the way cpu_util() does.
+	 */
+	scale = capacity_orig_of(cpu);
+
+	/*
+	 * Early check to see if IRQ/steal time saturates the CPU, can be
+	 * because of inaccuracies in how we track these -- see
+	 * update_irq_load_avg().
+	 */
+	irq = cpu_util_irq(rq);
+	if (unlikely(irq >= scale)) {
+		if (min)
+			*min = scale;
+		if (max)
+			*max = scale;
+		return scale;
+	}
+
+	if (min) {
+		/*
+		 * The minimum utilization returns the highest level between
+		 * the IRQ pressure which steals time and the minimum
+		 * performance requirement.
+		 */
+		*min = irq;
+
+		/*
+		 * When an RT task is runnable we must ensure that it will run
+		 * at maximum compute capacity. (In 6.12 this is tied to
+		 * uclamp not being used; there is no uclamp here.)
+		 */
+		if (rt_rq_is_runnable(&rq->rt))
+			*min = max(*min, scale);
+	}
+
+	/*
+	 * The time spent on RT/DL tasks is visible as 'lost' time to CFS
+	 * tasks, so the same metric tracks the effective utilization. This
+	 * tree has no RT/DL PELT signals, so only CFS is added here.
+	 */
+	util = util_cfs;
+
+	/*
+	 * The maximum hint is a soft bandwidth requirement, which can be
+	 * lower than the actual utilization because of uclamp_max
+	 * requirements. There is no uclamp in this tree.
+	 */
+	if (max)
+		*max = scale;
+
+	if (util >= scale)
+		return scale;
+
+	/*
+	 * There is still idle time; further improve the number by using the
+	 * IRQ metric. Because IRQ/steal time is hidden from the task clock
+	 * we need to scale the task numbers:
+	 *
+	 *              max - irq
+	 *   U' = irq + --------- * U
+	 *                 max
+	 */
+	util = scale_irq_capacity(util, irq, scale);
+	util += irq;
+
+	return min(scale, util);
+}
+
+
 unsigned long cpu_util_freq(int cpu)
 {
 #ifdef CONFIG_SCHED_WALT
