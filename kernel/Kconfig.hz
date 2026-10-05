@@ -56,7 +56,7 @@ config HZ
 
 config MIN_BASE_SLICE_NS
 	int "Default value for min_base_slice_ns"
-	default 2000000
+	default 750000
 	help
 	 The BORE Scheduler automatically calculates the optimal base
 	 slice for the configured HZ using the following equation:

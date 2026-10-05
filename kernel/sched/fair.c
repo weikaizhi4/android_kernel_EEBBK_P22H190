@@ -215,8 +215,17 @@ static unsigned int get_update_sysctl_factor(void)
 #ifdef CONFIG_SCHED_BORE
 static void update_sysctl(void)
 {
-	sysctl_sched_base_slice = nsecs_per_tick *
-		max(1U, DIV_ROUND_UP(sysctl_sched_min_base_slice, nsecs_per_tick));
+	/*
+	 * BORE upstream rounds the request size up to a multiple of
+	 * nsecs_per_tick, which at HZ=250 forces a 4ms slice -- 5 times
+	 * coarser than EEVDF's 750us default. That is enough to make
+	 * latency sensitive vendor drivers time out on this platform
+	 * (eMMC software command queue: "cache flush error -110", which
+	 * makes f2fs abort and every write return EIO), so honour the
+	 * configured minimum slice directly instead of rounding it up to
+	 * the tick.
+	 */
+	sysctl_sched_base_slice = sysctl_sched_min_base_slice;
 }
 void sched_update_min_base_slice(void) { update_sysctl(); }
 #else
