@@ -46,7 +46,12 @@ else
 fi
 OUT_DIR="${P22H190_BUILD_DIR:-$SRC_DIR/out/ums512-p22h190${PROFILE_SUFFIX}}"
 DEST_DIR="${P22H190_OUTPUT_DIR:-$SRC_DIR/out/release${PROFILE_SUFFIX}}"
-TC_DIR="${ANDROID_CLANG_DIR:-$SRC_DIR/out/toolchains/clang-r383902/bin}"
+# Toolchain: match the local LineageOS ROM kernel build, i.e. the clang 17
+# prebuilt (r487747c) plus the AOSP/Lineage aarch64 GCC 4.9 binutils, with
+# CROSS_COMPILE=aarch64-linux-android- and CLANG_TRIPLE=aarch64-linux-gnu-.
+TC_DIR="${ANDROID_CLANG_DIR:-$SRC_DIR/out/toolchains/clang-r487747c/bin}"
+GCC_DIR="${ANDROID_GCC_DIR:-$SRC_DIR/out/toolchains/aarch64-linux-android-4.9}"
+CCPREFIX="${CROSS_COMPILE:-aarch64-linux-android-}"
 KPM_PATCHER="${KPM_PATCHER:-$SRC_DIR/out/tools/patch_linux}"
 MODULE_METADATA_PATCHER="${MODULE_METADATA_PATCHER:-$SRC_DIR/tools/patch-module-metadata.pl}"
 SOCKO_TEMPLATE="${SOCKO_TEMPLATE:-$SRC_DIR/prebuilts/p22h190/socko.factory.img}"
@@ -65,13 +70,17 @@ if [[ ! -x "$TC_DIR/clang" || ! -x "$TC_DIR/ld.lld" ]]; then
     exit 1
 fi
 
-if ! command -v aarch64-linux-gnu-ld >/dev/null 2>&1; then
-    printf 'error: aarch64-linux-gnu binutils are not in PATH\n' >&2
+if [[ -d "$GCC_DIR/bin" ]]; then
+    export PATH="$GCC_DIR/bin:$PATH"
+fi
+
+if ! command -v "${CCPREFIX}ld" >/dev/null 2>&1; then
+    printf 'error: %s binutils are not in PATH (set ANDROID_GCC_DIR)\n' "$CCPREFIX" >&2
     exit 1
 fi
 
 if [[ "$TARGET" != "kernel" ]]; then
-    for command_name in aarch64-linux-gnu-objcopy modinfo modprobe fuse2fs e2fsck zip; do
+    for command_name in "${CCPREFIX}objcopy" modinfo modprobe fuse2fs e2fsck zip; do
         if ! command -v "$command_name" >/dev/null 2>&1; then
             printf 'error: required command not found: %s\n' "$command_name" >&2
             exit 1
@@ -103,7 +112,10 @@ export PATH="$TC_DIR:$PATH"
 
 # Keep the release string stable so the kernel and factory modules use the
 # exact same vermagic across reproducible builds.
-KERNEL_LOCALVERSION="-Slimezhao-v1.0"
+# Cosmetic only: the effective version comes from CONFIG_LOCALVERSION in the
+# defconfig (currently -Slimezhao-v1.5); read it so logs match the build.
+KERNEL_LOCALVERSION="${KERNEL_LOCALVERSION:-$(sed -n 's/^CONFIG_LOCALVERSION="\(.*\)"/\1/p' \
+    "$SRC_DIR/arch/arm64/configs/$DEFCONFIG" | head -1)}"
 KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-twodays}"
 KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-P22H190-build}"
 BUILD_TIME="${KBUILD_BUILD_TIMESTAMP:-$(date -u '+%Y-%m-%d %H:%M:%S UTC')}"
@@ -114,7 +126,7 @@ MAKE_ARGS=(
     ARCH=arm64
     CC=clang
     LD=ld.lld
-    CROSS_COMPILE=aarch64-linux-gnu-
+    CROSS_COMPILE="${CCPREFIX}"
     CLANG_TRIPLE=aarch64-linux-gnu-
     KBUILD_BUILD_USER="$KBUILD_BUILD_USER"
     KBUILD_BUILD_HOST="$KBUILD_BUILD_HOST"

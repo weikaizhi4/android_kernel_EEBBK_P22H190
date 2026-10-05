@@ -26,7 +26,7 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       CLANG_TRIPLE: aarch64-linux-gnu-
-      CROSS_COMPILE: aarch64-linux-gnu-
+      CROSS_COMPILE: aarch64-linux-android-
       ANYKERNEL_DIR: ${{ github.workspace }}/out/AnyKernel3
       KPM_PATCHER: ${{ github.workspace }}/out/tools/patch_linux
 
@@ -37,24 +37,48 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Fetch Google Android clang r383902
+      - name: Fetch Android clang r487747c (clang 17.0.2, as used locally)
         shell: bash
         run: |
           set -euo pipefail
-          CLANG_ROOT="$RUNNER_TEMP/clang-r383902"
-          CLANG_DIR="$CLANG_ROOT/clang-r383902/bin"
+          CLANG_NAME=clang-r487747c
+          CLANG_ROOT="$RUNNER_TEMP/$CLANG_NAME"
+          CLANG_DIR="$CLANG_ROOT/$CLANG_NAME/bin"
           CLANG_REPO="$RUNNER_TEMP/clang-repo"
           mkdir -p "$CLANG_ROOT" out
-          git clone --depth=1 --filter=blob:none --sparse \
-            --branch android12-release \
-            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
-            "$CLANG_REPO"
-          git -C "$CLANG_REPO" sparse-checkout set clang-r383902
-          cp -a "$CLANG_REPO/clang-r383902" "$CLANG_ROOT/"
+          # clang-r487747c lives in the Android 14 release branch; fall back to
+          # main in case the branch is ever re-pointed.
+          for branch in android14-release main; do
+            rm -rf "$CLANG_REPO"
+            git clone --depth=1 --filter=blob:none --sparse \
+              --branch "$branch" \
+              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+              "$CLANG_REPO"
+            git -C "$CLANG_REPO" sparse-checkout set "$CLANG_NAME"
+            [ -d "$CLANG_REPO/$CLANG_NAME" ] && break
+          done
+          test -d "$CLANG_REPO/$CLANG_NAME"
+          cp -a "$CLANG_REPO/$CLANG_NAME" "$CLANG_ROOT/"
           test -x "$CLANG_DIR/clang"
           "$CLANG_DIR/clang" --version | tee out/clang-version.txt
-          grep -F 'b397f81060ce6d701042b782172ed13bee898b79' out/clang-version.txt
+          # must be the same toolchain the local Lineage kernel build uses
+          grep -F 'clang version 17.0.2' out/clang-version.txt
           printf 'CLANG_DIR=%s\n' "$CLANG_DIR" >> "$GITHUB_ENV"
+
+      - name: Fetch AOSP aarch64 GCC 4.9 binutils (as used locally)
+        shell: bash
+        run: |
+          set -euo pipefail
+          GCC_DIR="$RUNNER_TEMP/aarch64-linux-android-4.9"
+          rm -rf "$GCC_DIR"
+          git clone --depth=1 --filter=blob:none \
+            --branch android12-release \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            "$GCC_DIR"
+          test -x "$GCC_DIR/bin/aarch64-linux-android-objcopy"
+          test -x "$GCC_DIR/bin/aarch64-linux-android-nm"
+          "$GCC_DIR/bin/aarch64-linux-android-objcopy" --version | head -1
+          printf 'ANDROID_GCC_DIR=%s\n' "$GCC_DIR" >> "$GITHUB_ENV"
 
       - name: Select build profile
         shell: bash
@@ -100,8 +124,8 @@ jobs:
           fi
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
           sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y \
-            bc bison cpio device-tree-compiler e2fsprogs fuse2fs flex fuse3 \
-            gcc-aarch64-linux-gnu git kmod libelf-dev libncurses-dev \
+            bc binutils bison cpio device-tree-compiler e2fsprogs fuse2fs \
+            flex fuse3 git kmod libelf-dev libncurses-dev \
             libssl-dev libyaml-dev lld perl python3 rsync unzip zip
 
       - name: Fetch KPM patcher and AnyKernel3
@@ -125,6 +149,7 @@ jobs:
           set -o pipefail
           mkdir -p out
           ANDROID_CLANG_DIR="$CLANG_DIR" \
+          ANDROID_GCC_DIR="$ANDROID_GCC_DIR" \
           P22H190_PROFILE="$P22H190_PROFILE" \
           P22H190_DEFCONFIG="$P22H190_DEFCONFIG" \
           P22H190_BUILD_DIR="$BUILD_DIR" \
