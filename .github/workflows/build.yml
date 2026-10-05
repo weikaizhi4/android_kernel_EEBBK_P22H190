@@ -1,8 +1,16 @@
-name: Build P22H190 recovery upgrade
+name: Build EEBBK UMS512 kernel recovery upgrade
 
 on:
   workflow_dispatch:
     inputs:
+      device:
+        description: Target device
+        type: choice
+        required: true
+        default: p22h190
+        options:
+          - p22h190
+          - p21h170
       profile:
         description: Build profile
         type: choice
@@ -16,7 +24,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: p22h190-${{ inputs.profile || 'standard' }}-${{ github.ref }}
+  group: ${{ inputs.device || 'p22h190' }}-${{ inputs.profile || 'standard' }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -83,36 +91,63 @@ jobs:
       - name: Select build profile
         shell: bash
         env:
+          BUILD_DEVICE: ${{ inputs.device || 'p22h190' }}
           BUILD_PROFILE: ${{ inputs.profile || 'standard' }}
         run: |
           set -euo pipefail
-          case "$BUILD_PROFILE" in
-            standard)
-              profile=p22h190
-              defconfig=ums512-p22h190_defconfig
-              build_dir="$GITHUB_WORKSPACE/out/ums512-p22h190"
+          case "$BUILD_DEVICE" in
+            p22h190)
+              KERNEL_PREFIX=P22H190
+              BUILD_SCRIPT=./scripts/build-p22h190.sh
+              SOCKO="$GITHUB_WORKSPACE/prebuilts/p22h190/socko.factory.img"
+              case "$BUILD_PROFILE" in
+                standard)
+                  profile=p22h190
+                  defconfig=ums512-p22h190_defconfig
+                  build_dir="$GITHUB_WORKSPACE/out/ums512-p22h190"
+                  release_dir="$GITHUB_WORKSPACE/out/release"
+                  ;;
+                droidspaces)
+                  profile=droidspaces
+                  defconfig=ums512-p22h190_droidspaces_defconfig
+                  build_dir="$GITHUB_WORKSPACE/out/ums512-p22h190-droidspaces"
+                  release_dir="$GITHUB_WORKSPACE/out/release-droidspaces"
+                  ;;
+                *)
+                  echo "unsupported profile: $BUILD_PROFILE" >&2
+                  exit 2
+                  ;;
+              esac
+              ;;
+            p21h170)
+              if [ "$BUILD_PROFILE" != standard ]; then
+                echo "the droidspaces profile is only implemented for p22h190" >&2
+                exit 2
+              fi
+              KERNEL_PREFIX=P21H170
+              BUILD_SCRIPT=./scripts/build-p21h170.sh
+              SOCKO="$GITHUB_WORKSPACE/prebuilts/p21h170/socko.factory.img"
+              profile=p21h170
+              defconfig=ums512-p21h170_defconfig
+              build_dir="$GITHUB_WORKSPACE/out/ums512-p21h170"
               release_dir="$GITHUB_WORKSPACE/out/release"
               ;;
-            droidspaces)
-              profile=droidspaces
-              defconfig=ums512-p22h190_droidspaces_defconfig
-              build_dir="$GITHUB_WORKSPACE/out/ums512-p22h190-droidspaces"
-              release_dir="$GITHUB_WORKSPACE/out/release-droidspaces"
-              ;;
             *)
-              echo "unsupported profile: $BUILD_PROFILE" >&2
+              echo "unsupported device: $BUILD_DEVICE" >&2
               exit 2
               ;;
           esac
           {
-            printf 'P22H190_PROFILE=%s\n' "$profile"
-            printf 'P22H190_DEFCONFIG=%s\n' "$defconfig"
+            printf 'KERNEL_PREFIX=%s\n' "$KERNEL_PREFIX"
+            printf 'BUILD_SCRIPT=%s\n' "$BUILD_SCRIPT"
+            printf 'SOCKO_TEMPLATE=%s\n' "$SOCKO"
+            printf 'KERNEL_PROFILE=%s\n' "$profile"
+            printf 'KERNEL_DEFCONFIG=%s\n' "$defconfig"
             printf 'BUILD_DIR=%s\n' "$build_dir"
             printf 'RELEASE_DIR=%s\n' "$release_dir"
-            printf 'SOCKO_TEMPLATE=%s\n' "$GITHUB_WORKSPACE/prebuilts/p22h190/socko.factory.img"
           } >> "$GITHUB_ENV"
-          printf 'profile=%s\ndefconfig=%s\nbuild_dir=%s\nrelease_dir=%s\n' \
-            "$profile" "$defconfig" "$build_dir" "$release_dir"
+          printf 'device=%s profile=%s\ndefconfig=%s\nbuild_dir=%s\nrelease_dir=%s\n' \
+            "$BUILD_DEVICE" "$profile" "$defconfig" "$build_dir" "$release_dir"
 
       - name: Install build and packaging dependencies
         run: |
@@ -148,17 +183,18 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p out
-          ANDROID_CLANG_DIR="$CLANG_DIR" \
-          ANDROID_GCC_DIR="$ANDROID_GCC_DIR" \
-          P22H190_PROFILE="$P22H190_PROFILE" \
-          P22H190_DEFCONFIG="$P22H190_DEFCONFIG" \
-          P22H190_BUILD_DIR="$BUILD_DIR" \
-          P22H190_OUTPUT_DIR="$RELEASE_DIR" \
-          SOCKO_TEMPLATE="$SOCKO_TEMPLATE" \
-          ANYKERNEL_DIR="$ANYKERNEL_DIR" \
-          KPM_PATCHER="$KPM_PATCHER" \
-          JOBS="$(nproc)" \
-            ./scripts/build-p22h190.sh all 2>&1 | tee out/build.log
+          env \
+            ANDROID_CLANG_DIR="$CLANG_DIR" \
+            ANDROID_GCC_DIR="$ANDROID_GCC_DIR" \
+            "${KERNEL_PREFIX}_PROFILE=$KERNEL_PROFILE" \
+            "${KERNEL_PREFIX}_DEFCONFIG=$KERNEL_DEFCONFIG" \
+            "${KERNEL_PREFIX}_BUILD_DIR=$BUILD_DIR" \
+            "${KERNEL_PREFIX}_OUTPUT_DIR=$RELEASE_DIR" \
+            SOCKO_TEMPLATE="$SOCKO_TEMPLATE" \
+            ANYKERNEL_DIR="$ANYKERNEL_DIR" \
+            KPM_PATCHER="$KPM_PATCHER" \
+            JOBS="$(nproc)" \
+            "$BUILD_SCRIPT" all 2>&1 | tee out/build.log
           test "${PIPESTATUS[0]}" -eq 0
 
       - name: Verify recovery upgrade package
@@ -167,7 +203,7 @@ jobs:
           set -euo pipefail
           ls -lh "$RELEASE_DIR"
           package=$(find "$RELEASE_DIR" -maxdepth 1 -type f \
-            -name 'P22H190-recovery-*.zip' -size +1c -print -quit)
+            -name "${KERNEL_PREFIX}-recovery-*.zip" -size +1c -print -quit)
           test -n "$package"
           test "$(find "$RELEASE_DIR" -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 1
           sha256sum "$package"
@@ -176,9 +212,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: p22h190-${{ inputs.profile || 'standard' }}-packages-${{ github.sha }}
+          name: ${{ inputs.device || 'p22h190' }}-${{ inputs.profile || 'standard' }}-packages-${{ github.sha }}
           path: |
-            out/release*/P22H190-recovery-*.zip
+            out/release*/*-recovery-*.zip
           if-no-files-found: warn
           compression-level: 0
 
@@ -186,9 +222,9 @@ jobs:
         if: github.event_name != 'pull_request' && success()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: p22h190-${{ inputs.profile || 'standard' }}-${{ github.sha }}-${{ github.run_number }}
-          name: P22H190 ${{ inputs.profile || 'standard' }} kernel ${{ github.sha }}
+          tag_name: ${{ inputs.device || 'p22h190' }}-${{ inputs.profile || 'standard' }}-${{ github.sha }}-${{ github.run_number }}
+          name: ${{ inputs.device || 'p22h190' }} ${{ inputs.profile || 'standard' }} kernel ${{ github.sha }}
           prerelease: true
           generate_release_notes: false
           files: |
-            out/release*/P22H190-recovery-*.zip
+            out/release*/*-recovery-*.zip

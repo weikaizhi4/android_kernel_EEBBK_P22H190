@@ -3097,9 +3097,17 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 		if (err)
 			return err;
 	} else if (!same_magic(modmagic, vermagic, info->index.vers)) {
+#ifdef CONFIG_MODULE_FORCE_LOAD
+		pr_warn("%s: ignoring version magic '%s', expected '%s'\n",
+			info->name, modmagic, vermagic);
+		err = try_to_force_load(mod, "bad vermagic");
+		if (err)
+			return err;
+#else
 		pr_err("%s: version magic '%s' should be '%s'\n",
 		       info->name, modmagic, vermagic);
 		return -ENOEXEC;
+#endif
 	}
 
 	if (!get_modinfo(info, "intree")) {

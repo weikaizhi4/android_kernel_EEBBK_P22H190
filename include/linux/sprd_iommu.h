@@ -136,17 +136,14 @@ int sprd_iommu_notifier_call_chain(void *data)
 
 void sprd_iommu_pool_show(struct device *dev)
 {
-	return -ENODEV;
 }
 
 void sprd_iommu_reg_dump(struct device *dev)
 {
-	return -ENODEV;
 }
 
 void sprd_iommu_reg_show(struct device *dev)
 {
-	return -ENODEV;
 }
 
 static inline int sprd_iommu_attach_device(struct device *dev)
@@ -172,6 +169,17 @@ static inline int sprd_iommu_unmap_orphaned(struct sprd_iommu_unmap_data *data)
 }
 
 static inline int sprd_iommu_restore(struct device *dev)
+{
+	return -ENODEV;
+}
+
+static inline int sprd_iommu_map_single_page(struct device *dev,
+					 struct sprd_iommu_map_data *data)
+{
+	return -ENODEV;
+}
+
+static inline int sprd_iommu_set_cam_bypass(bool vaor_bp_en)
 {
 	return -ENODEV;
 }

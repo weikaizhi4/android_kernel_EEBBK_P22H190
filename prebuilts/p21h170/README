@@ -1,0 +1,3 @@
+`socko.factory.img` is the stock P21H170 socko filesystem used as the
+template. The build script replaces the selected kernel modules after
+updating their symbol CRCs and vermagic for the newly built kernel.
