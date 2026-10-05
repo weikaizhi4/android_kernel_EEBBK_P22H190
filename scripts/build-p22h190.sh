@@ -126,6 +126,11 @@ MAKE_ARGS=(
     ARCH=arm64
     CC=clang
     LD=ld.lld
+    # clang 17 emits DWARF-5 .file directives that the AOSP/Lineage GCC 4.9
+    # assembler (binutils 2.27) cannot parse; without this the kernel Makefile
+    # adds -no-integrated-as and every object fails to assemble. The local
+    # Lineage kernel build passes LLVM_IAS=1 too.
+    LLVM_IAS=1
     CROSS_COMPILE="${CCPREFIX}"
     CLANG_TRIPLE=aarch64-linux-gnu-
     KBUILD_BUILD_USER="$KBUILD_BUILD_USER"
