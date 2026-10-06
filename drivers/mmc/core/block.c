@@ -1613,13 +1613,42 @@ out:
 	blk_end_request(req, status, blk_rq_bytes(req));
 }
 
+/* Retries after a failed cache flush, excluding the first attempt. */
+#define MMC_FLUSH_RETRIES	1
+
 static void mmc_blk_issue_flush(struct mmc_queue *mq, struct request *req)
 {
 	struct mmc_blk_data *md = mq->blkdata;
 	struct mmc_card *card = md->queue.card;
-	int ret = 0;
+	int ret, attempt;
 
-	ret = mmc_flush_cache(card);
+	/*
+	 * A single cache flush timeout used to be reported to the block layer
+	 * as an I/O error. That makes f2fs abort its checkpoint, after which
+	 * every write to /data returns EIO and mapped files cannot be read,
+	 * so user space crashes. The card itself normally recovers, so reset
+	 * the software command queue and retry before giving up. Only this
+	 * error path changes; a flush that succeeds is untouched.
+	 */
+	for (attempt = 0; ; attempt++) {
+		ret = mmc_flush_cache(card);
+		if (!ret)
+			break;
+
+		if (attempt >= MMC_FLUSH_RETRIES)
+			break;
+
+		if (card->ext_csd.cmdq_en) {
+			mmc_cmdq_disable(card);
+			mmc_cmdq_enable(card);
+		}
+
+		pr_warn("%s: retrying cache flush (%d/%d) after error %d\n",
+			mmc_hostname(card->host), attempt + 1,
+			MMC_FLUSH_RETRIES, ret);
+		msleep(50);
+	}
+
 	blk_end_request_all(req, ret ? BLK_STS_IOERR : BLK_STS_OK);
 }
 
