@@ -350,6 +350,24 @@ exit:
 	return ret;
 }
 
+#ifdef CONFIG_SPRD_CAMERA_SENSOR_P21H170_RAILS
+/*
+ * The S5K4H7 samples its configuration while RESETB is asserted, so the MCLK
+ * has to be stable *before* the reset is released. The factory HAL only asks
+ * for the clock when it runs its own power sequence; do it ourselves, in the
+ * right order, together with the reset pulse below. 24MHz is the sensor's
+ * standard master clock (select_sensor_mclk() takes MHz).
+ */
+static void sprd_sensor_p21h170_mclk_on(int sensor_id)
+{
+	unsigned int saved = 0;
+	int ret;
+
+	ret = sprd_sensor_set_mclk(&saved, 24, sensor_id);
+	pr_info("sensor %d: mclk 24MHz ret %d\n", sensor_id, ret);
+}
+#endif
+
 int sprd_sensor_set_voltage(int sensor_id, unsigned int val, int type)
 {
 	struct regulator *p_regulator = NULL;
@@ -379,18 +397,54 @@ int sprd_sensor_set_voltage(int sensor_id, unsigned int val, int type)
 		tolerance = regulator_get_linear_step(p_regulator);
 		ret = regulator_set_voltage(p_regulator, val - tolerance/2, val + tolerance/2);
 		if (ret == -EINVAL) {
+#ifdef CONFIG_SPRD_CAMERA_SENSOR_P21H170_RAILS
+			/*
+			 * The camera HAL can ask for a voltage this LDO cannot
+			 * provide - it requests 1.0V, which is the OV5675 rail
+			 * voltage, while the S5K4H7 rails are 1.2V/1.8V/2.8V.
+			 *
+			 * Do NOT retry with the regulator minimum: that forces
+			 * vddcamio to 1.2V, leaves the sensor underpowered, and
+			 * the i2c identify then reads 0xffff for every camera
+			 * (both the rear and the front one fail). The factory
+			 * kernel simply let the call fail, which leaves the rail
+			 * at the voltage the bootloader programmed (1.8V).
+			 */
+			pr_warn("regulator %s vol %d unsupported, keeping current setting\n",
+				sprd_sensor_supply_names[type], val);
+			ret = 0;
+#else
 			/* EEBBK A3: requested voltage may be below the LDO
 			 * minimum (camera HAL passes 1.0V for OV5675 rails);
 			 * fall back to the regulator minimum voltage */
 			pr_err("regulator %s vol %d out of range, falling back to min\n",
 			       sprd_sensor_supply_names[type], val);
 			ret = regulator_set_voltage(p_regulator, 0, INT_MAX);
+#endif
 		}
 		if (ret) {
 			pr_err("regulator %s vol set %d fail ret%d\n",
 			       sprd_sensor_supply_names[type], val, ret);
 			goto exit;
 		}
+#ifdef CONFIG_SPRD_CAMERA_SENSOR_P21H170_RAILS
+		/*
+		 * The camera i2c pins are only ever programmed by
+		 * sprd_pull_i2c_gpio(), which hangs off SENSOR_IO_SET_ID - a command
+		 * this HAL may never send. The device tree declares no pinctrl for the
+		 * i2c nodes, so without this the bus pins stay unconfigured and every
+		 * transfer times out. Configure them before touching the clock.
+		 */
+		sprd_pull_i2c_gpio(sensor_id, 1);
+		pr_info("sensor %d: i2c pins configured\n", sensor_id);
+		/* clock next: the sensor latches config while in reset */
+		sprd_sensor_p21h170_mclk_on(sensor_id);
+		/*
+		 * No reset pulse here: the HAL drives SENSOR_IO_RST_LEVEL itself
+		 * and set_rst_level() writes the raw pin level, so pulsing after it
+		 * would override the level the HAL asked for.
+		 */
+#endif
 		ret = sprd_sensor_regulator_enable(p_regulator, p_dev, type);
 		if (ret) {
 			devm_regulator_put(p_regulator);
@@ -939,8 +993,15 @@ int sprd_sensor_read_reg(int sensor_id, struct sensor_reg_bits_tag *pReg)
 		msg_r[1].len = r_cmd_num;
 		cnt = i2c_transfer(p_dev->i2c_info->adapter, msg_r, 2);
 		if (cnt != SPRD_SENSOR_I2C_READ_SUCCESS_CNT) {
+#ifdef CONFIG_SPRD_CAMERA_SENSOR_P21H170_RAILS
+			pr_err("%s fail, cnt %d, adapter %d, addr 0x%x, reg_addr 0x%x\n",
+			__func__, cnt,
+			p_dev->i2c_info->adapter ? p_dev->i2c_info->adapter->nr : -1,
+			p_dev->i2c_info->addr, reg_addr);
+#else
 			pr_err("%s fail, ret %d, addr 0x%x, reg_addr 0x%x\n",
 			__func__, ret, p_dev->i2c_info->addr, reg_addr);
+#endif
 			usleep_range(1000, 1500);
 		} else {
 			pReg->reg_value =
@@ -1012,12 +1073,23 @@ int sprd_sensor_write_reg(int sensor_id, struct sensor_reg_bits_tag *pReg)
 			msg_w.len = index;
 			cnt = i2c_transfer(p_dev->i2c_info->adapter, &msg_w, 1);
 			if (cnt != SPRD_SENSOR_I2C_WRITE_SUCCESS_CNT) {
+#ifdef CONFIG_SPRD_CAMERA_SENSOR_P21H170_RAILS
+				pr_err("%s fail to:\n"
+					"cnt=%d, adapter=%d, i2cAddr=%x,\n"
+					"addr=%x, value=%x, bit=%d\n",
+					__func__, cnt,
+					p_dev->i2c_info->adapter ? p_dev->i2c_info->adapter->nr : -1,
+					p_dev->i2c_info->addr,
+					pReg->reg_addr, pReg->reg_value,
+					pReg->reg_bits);
+#else
 				pr_err("%s fail to:\n"
 					"i2cAddr=%x,\n"
 					"addr=%x, value=%x, bit=%d\n",
 					__func__, p_dev->i2c_info->addr,
 					pReg->reg_addr, pReg->reg_value,
 					pReg->reg_bits);
+#endif
 				ret = -1;
 				continue;
 			} else {

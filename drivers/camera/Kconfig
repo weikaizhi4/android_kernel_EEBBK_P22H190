@@ -72,4 +72,35 @@ config SPRD_CAMERA_SENSOR
 
 	  To compile this driver as a module, choose M here.
 
+config SPRD_CAMERA_SENSOR_P21H170_RAILS
+	bool "Enable the p21h170 camera sensor workarounds"
+	default n
+	help
+	  Enable this on p21h170 only. Leave it disabled on p22h190 so its
+	  behaviour is completely unchanged.
+
+	  Two gaps were found in how the factory camera HAL and this sensor
+	  driver split the power-up sequence. Both are gaps on the driver side,
+	  verified against the HAL's own ioctl traffic:
+
+	  1. The HAL never enables the sensor master clock. It only ever issues
+	     SENSOR_IO_SET_MCLK with 0, and it never sends SENSOR_IO_POWER_CFG
+	     (the command that would have carried the full sequence). The
+	     factory kernel ran its own power-on sequence from that command;
+	     this driver generation has it commented out. Without a running
+	     MCLK the sensor cannot answer on i2c at all, so the driver enables
+	     24MHz (select_sensor_mclk() takes MHz, and 24 is the value
+	     libsensor_s5k4h7_tsp.so asks for) once the rails are up.
+
+	  2. The camera i2c pins are only ever programmed by
+	     sprd_pull_i2c_gpio(), which hangs off SENSOR_IO_SET_ID. The device
+	     tree declares no pinctrl for the i2c nodes, so the bus depends on
+	     that call reaching the driver. The driver now also programs the
+	     pins itself when the rails come up.
+
+	  Note: this does NOT make the camera work on the p21h170 unit that was
+	  debugged - the sensor still does not acknowledge on i2c. The changes
+	  are kept because they are verified, reasoned gaps, and the full
+	  investigation is written up in device/eebbk/p21h170/CAMERA-NOTES.md.
+
 endmenu

@@ -147,6 +147,7 @@ static int sprd_sensor_io_set_pd(struct sprd_sensor_file_tag *p_file,
 
 	ret = copy_from_user(&power_level, (unsigned char *)arg,
 			     sizeof(unsigned char));
+	pr_debug("ioctl PD sensor %d level %u\n", p_file->sensor_id, power_level);
 	if (ret == 0)
 		ret = sprd_sensor_set_pd_level(p_file->sensor_id, power_level);
 	return ret;
@@ -278,6 +279,8 @@ static int sprd_sensor_io_set_reset_level(struct sprd_sensor_file_tag *p_file,
 
 	ret = copy_from_user(&level, (unsigned int *)arg,
 			     sizeof(unsigned int));
+	pr_debug("ioctl RST_LEVEL sensor %d level %u\n",
+		 p_file->sensor_id, level);
 	if (ret == 0)
 		ret = sprd_sensor_set_rst_level(p_file->sensor_id, level);
 
@@ -514,6 +517,26 @@ static long sprd_sensor_file_ioctl(struct file *file, unsigned int cmd,
 	int ret = 0;
 	struct sprd_sensor_core_module_tag *p_mod;
 	struct sprd_sensor_file_tag *p_file = file->private_data;
+
+#ifdef CONFIG_SPRD_CAMERA_SENSOR_P21H170_RAILS
+	/*
+	 * Record every ioctl command the HAL uses, once each. The HAL never
+	 * sends SENSOR_IO_POWER_CFG on this board, so the only way to know which
+	 * power steps it does drive - and whether it ever sends SENSOR_IO_SET_ID,
+	 * which is what programmes the camera i2c pins - is to log them.
+	 */
+	{
+		static u64 seen_cmds;
+		unsigned int bit = _IOC_NR(cmd);
+
+		if (bit < 64 && !(seen_cmds & (1ULL << bit))) {
+			seen_cmds |= (1ULL << bit);
+			pr_debug("ioctl: sensor %d cmd 0x%x nr %u size %u dir %u\n",
+				 p_file->sensor_id, cmd, bit,
+				 _IOC_SIZE(cmd), _IOC_DIR(cmd));
+		}
+	}
+#endif
 
 	p_mod = p_file->mod_data;
 	if (cmd == SENSOR_IO_SET_ID) {
