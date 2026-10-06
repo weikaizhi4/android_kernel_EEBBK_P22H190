@@ -494,9 +494,6 @@ static void print_cfs_group_stats(struct seq_file *m, int cpu, struct task_group
 
 	PN(se->exec_start);
 	PN(se->vruntime);
-	PN(se->deadline);
-	PN(se->slice);
-	PN(se->vlag);
 	PN(se->sum_exec_runtime);
 	if (schedstat_enabled()) {
 		PN_SCHEDSTAT(se->statistics.wait_start);
@@ -589,7 +586,7 @@ static void print_rq(struct seq_file *m, struct rq *rq, int rq_cpu)
 void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 {
 	s64 MIN_vruntime = -1, min_vruntime, max_vruntime = -1,
-		left_deadline = -1, spread, rq0_min_vruntime, spread0;
+		spread, rq0_min_vruntime, spread0;
 	struct rq *rq = cpu_rq(cpu);
 	struct sched_entity *last;
 	unsigned long flags;
@@ -603,10 +600,8 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 			SPLIT_NS(cfs_rq->exec_clock));
 
 	raw_spin_lock_irqsave(&rq->lock, flags);
-	if (rb_first_cached(&cfs_rq->tasks_timeline)) {
+	if (rb_first_cached(&cfs_rq->tasks_timeline))
 		MIN_vruntime = (__pick_first_entity(cfs_rq))->vruntime;
-		left_deadline = (__pick_first_entity(cfs_rq))->deadline;
-	}
 	last = __pick_last_entity(cfs_rq);
 	if (last)
 		max_vruntime = last->vruntime;
@@ -617,10 +612,6 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 			SPLIT_NS(MIN_vruntime));
 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "min_vruntime",
 			SPLIT_NS(min_vruntime));
-	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "avg_vruntime",
-			SPLIT_NS(avg_vruntime(cfs_rq)));
-	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "left_deadline",
-			SPLIT_NS(left_deadline));
 	SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", "max_vruntime",
 			SPLIT_NS(max_vruntime));
 	spread = max_vruntime - MIN_vruntime;

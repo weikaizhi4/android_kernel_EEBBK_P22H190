@@ -429,8 +429,6 @@ struct cfs_rq {
 	unsigned int nr_running, h_nr_running;
 
 	u64 exec_clock;
-	s64 avg_vruntime;
-	u64 avg_load;
 	u64 min_vruntime;
 #ifndef CONFIG_64BIT
 	u64 min_vruntime_copy;
@@ -442,7 +440,7 @@ struct cfs_rq {
 	 * 'curr' points to currently running entity on this cfs_rq.
 	 * It is set to NULL otherwise (i.e when none are currently running).
 	 */
-	struct sched_entity *curr, *next;
+	struct sched_entity *curr, *next, *last, *skip;
 
 #ifdef	CONFIG_SCHED_DEBUG
 	unsigned int nr_spread_over;
@@ -1568,7 +1566,6 @@ extern const u32 sched_prio_to_wmult[40];
 #else
 #define ENQUEUE_MIGRATED	0x00
 #endif
-#define ENQUEUE_INITIAL		0x80
 
 #define RETRY_TASK		((void *)-1UL)
 
@@ -1664,9 +1661,6 @@ extern const struct sched_class stop_sched_class;
 extern const struct sched_class dl_sched_class;
 extern const struct sched_class rt_sched_class;
 extern const struct sched_class fair_sched_class;
-
-/* EEVDF: weighted average vruntime of the entities on a cfs_rq */
-extern u64 avg_vruntime(struct cfs_rq *cfs_rq);
 extern const struct sched_class idle_sched_class;
 
 
@@ -1864,10 +1858,6 @@ static inline unsigned long sched_get_rt_rq_util(int cpu)
 
 #if defined(CONFIG_IRQ_TIME_ACCOUNTING) || \
 	defined(CONFIG_PARAVIRT_TIME_ACCOUNTING)
-extern unsigned long cpu_util_cfs(int cpu);
-extern unsigned long effective_cpu_util(int cpu, unsigned long util_cfs,
-					unsigned long *min, unsigned long *max);
-
 static inline unsigned long cpu_util_irq(struct rq *rq)
 {
 	return rq->avg_irq.util_avg;

@@ -63,7 +63,6 @@
 #include <linux/binfmts.h>
 #include <linux/sched/sysctl.h>
 #include <linux/sched/coredump.h>
-#include <linux/sched/bore.h>
 #include <linux/kexec.h>
 #include <linux/bpf.h>
 #include <linux/mount.h>
@@ -131,16 +130,6 @@ static int sixty = 60;
 static int __maybe_unused neg_one = -1;
 
 static int zero;
-
-#ifdef CONFIG_SCHED_BORE
-static unsigned int bore_zero;
-static unsigned int bore_one = 1;
-static unsigned int bore_three = 3;
-static unsigned int bore_maxval_u8 = 255;
-static unsigned int bore_maxval_12_bits = 4095;
-static unsigned int bore_sixty_four = 64;
-static unsigned int bore_max_min_base_slice = 100000000;
-#endif
 static int __maybe_unused one = 1;
 static int __maybe_unused two = 2;
 static int __maybe_unused four = 4;
@@ -374,34 +363,6 @@ static struct ctl_table kern_table[] = {
 		.extra1		= &min_sched_granularity_ns,
 		.extra2		= &max_sched_granularity_ns,
 	},
-#ifdef CONFIG_SCHED_BORE
-	{
-		.procname	= "sched_base_slice",
-		.data		= &sysctl_sched_base_slice,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0444,
-		.proc_handler	= proc_douintvec,
-	},
-	{
-		.procname	= "sched_min_base_slice",
-		.data		= &sysctl_sched_min_base_slice,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= sched_bore_min_slice_handler,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_max_min_base_slice,
-	},
-#else
-	{
-		.procname	= "sched_base_slice",
-		.data		= &sysctl_sched_base_slice,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= sched_proc_update_handler,
-		.extra1		= &min_sched_granularity_ns,
-		.extra2		= &max_sched_granularity_ns,
-	},
-#endif
 	{
 		.procname	= "sched_latency_ns",
 		.data		= &sysctl_sched_latency,
@@ -473,101 +434,6 @@ static struct ctl_table kern_table[] = {
 		.proc_handler   = proc_dointvec_minmax,
 		.extra1         = &one,
 		.extra2         = &one_thousand,
-	},
-#endif
-#ifdef CONFIG_SCHED_BORE
-	{
-		.procname	= "sched_bore",
-		.data		= &sched_bore,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= sched_bore_update_handler,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_one,
-	},
-	{
-		.procname	= "sched_burst_exclude_kthreads",
-		.data		= &sched_burst_exclude_kthreads,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_one,
-	},
-	{
-		.procname	= "sched_burst_smoothness_long",
-		.data		= &sched_burst_smoothness_long,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_one,
-	},
-	{
-		.procname	= "sched_burst_smoothness_short",
-		.data		= &sched_burst_smoothness_short,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_one,
-	},
-	{
-		.procname	= "sched_burst_fork_atavistic",
-		.data		= &sched_burst_fork_atavistic,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_three,
-	},
-	{
-		.procname	= "sched_burst_parity_threshold",
-		.data		= &sched_burst_parity_threshold,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_maxval_u8,
-	},
-	{
-		.procname	= "sched_burst_penalty_offset",
-		.data		= &sched_burst_penalty_offset,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_sixty_four,
-	},
-	{
-		.procname	= "sched_burst_penalty_scale",
-		.data		= &sched_burst_penalty_scale,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec_minmax,
-		.extra1		= &bore_zero,
-		.extra2		= &bore_maxval_12_bits,
-	},
-	{
-		.procname	= "sched_burst_cache_stop_count",
-		.data		= &sched_burst_cache_stop_count,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec,
-	},
-	{
-		.procname	= "sched_burst_cache_lifetime",
-		.data		= &sched_burst_cache_lifetime,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec,
-	},
-	{
-		.procname	= "sched_deadline_boost_mask",
-		.data		= &sched_deadline_boost_mask,
-		.maxlen		= sizeof(unsigned int),
-		.mode		= 0644,
-		.proc_handler	= proc_douintvec,
 	},
 #endif
 	{
