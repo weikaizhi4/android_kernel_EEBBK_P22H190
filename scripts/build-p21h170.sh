@@ -136,7 +136,9 @@ MAKE_ARGS=(
 )
 
 JOBS="${JOBS:-$(nproc)}"
-OBJCOPY="${OBJCOPY:-aarch64-linux-gnu-objcopy}"
+# The module metadata patcher needs an objcopy that can dump/update sections;
+# prefer the one shipped with the clang toolchain, else the Android binutils.
+OBJCOPY="${OBJCOPY:-$(command -v llvm-objcopy || echo "${CCPREFIX}objcopy")}"
 
 SOCKO_MODULES=(
     drivers/gpu/arm/midgard/mali_gondul.ko
