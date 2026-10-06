@@ -51,12 +51,10 @@ DEST_DIR="${P21H170_OUTPUT_DIR:-$SRC_DIR/out/release${PROFILE_SUFFIX}}"
 TC_DIR="${ANDROID_CLANG_DIR:-$SRC_DIR/out/toolchains/clang-r487747c/bin}"
 GCC_DIR="${ANDROID_GCC_DIR:-$SRC_DIR/out/toolchains/aarch64-linux-android-4.9}"
 CCPREFIX="${CROSS_COMPILE:-aarch64-linux-android-}"
-KPM_PATCHER="${KPM_PATCHER:-$SRC_DIR/out/tools/patch_linux}"
 MODULE_METADATA_PATCHER="${MODULE_METADATA_PATCHER:-$SRC_DIR/tools/patch-module-metadata.pl}"
 SOCKO_TEMPLATE="${SOCKO_TEMPLATE:-$SRC_DIR/prebuilts/p21h170/socko.factory.img}"
 ANYKERNEL_DIR="${ANYKERNEL_DIR:-$SRC_DIR/out/AnyKernel3}"
 RECOVERY_SCRIPT_TEMPLATE="${RECOVERY_SCRIPT_TEMPLATE:-$SRC_DIR/scripts/p21h170-recovery-anykernel.sh.in}"
-ENABLE_KPM="${ENABLE_KPM:-1}"
 FUSERMOUNT="${FUSERMOUNT:-$(command -v fusermount || command -v fusermount3 || true)}"
 
 if [[ ! -f "$SRC_DIR/arch/arm64/configs/$DEFCONFIG" ]]; then
@@ -202,27 +200,7 @@ trap cleanup EXIT
 mkdir -p "$STAGE/modules"
 mkdir -p "$STAGE/socko-modules"
 
-if [[ "$ENABLE_KPM" == "1" ]]; then
-    if [[ ! -x "$KPM_PATCHER" ]]; then
-        printf 'error: KPM patcher not found or not executable: %s\n' "$KPM_PATCHER" >&2
-        exit 1
-    fi
-
-    KPM_STAGE="$STAGE/kpm"
-    mkdir -p "$KPM_STAGE"
-    cp -f "$IMAGE" "$KPM_STAGE/Image"
-    (
-        cd "$KPM_STAGE"
-        "$KPM_PATCHER"
-    )
-    if [[ ! -f "$KPM_STAGE/oImage" ]]; then
-        printf 'error: KPM patcher completed without %s\n' "$KPM_STAGE/oImage" >&2
-        exit 1
-    fi
-    cp -f "$KPM_STAGE/oImage" "$STAGE/Image"
-else
-    cp -f "$IMAGE" "$STAGE/Image"
-fi
+cp -f "$IMAGE" "$STAGE/Image"
 cp -f "$OUT_DIR/System.map" "$STAGE/System.map"
 cp -f "$OUT_DIR/.config" "$STAGE/.config"
 
@@ -242,10 +220,6 @@ if [[ "$TARGET" == "kernel" ]]; then
         printf 'clang=%s\n' "$TC_DIR/clang"
         printf 'kernel_release=%s\n' "$KERNEL_RELEASE"
         printf 'git_hash=%s\n' "$GIT_HASH"
-        printf 'kpm=%s\n' "$ENABLE_KPM"
-        if [[ "$ENABLE_KPM" == "1" ]]; then
-            sha256sum "$KPM_PATCHER"
-        fi
         printf 'built_at=%s\n' "$(date -Is)"
         sha256sum "$STAGE/Image"
     } > "$STAGE/build-info.txt"
@@ -382,10 +356,6 @@ rm -rf "$DEST_DIR/modules" "$DEST_DIR/socko-modules"
     printf 'kernel_author=%s\n' "$KERNEL_AUTHOR"
     printf 'build_time=%s\n' "$BUILD_TIME"
     printf 'git_hash=%s\n' "$GIT_HASH"
-    printf 'kpm=%s\n' "$ENABLE_KPM"
-    if [[ "$ENABLE_KPM" == "1" ]]; then
-        sha256sum "$KPM_PATCHER"
-    fi
     printf 'socko_modules=%s\n' "${#SOCKO_MODULES[@]}"
     printf 'socko_factory_modules=%s\n' "${#FACTORY_MODULES[@]}"
     printf 'socko_template=%s\n' "$SOCKO_TEMPLATE"
