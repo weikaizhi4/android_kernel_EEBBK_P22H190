@@ -36,7 +36,6 @@ jobs:
       CLANG_TRIPLE: aarch64-linux-gnu-
       CROSS_COMPILE: aarch64-linux-android-
       ANYKERNEL_DIR: ${{ github.workspace }}/out/AnyKernel3
-      KPM_PATCHER: ${{ github.workspace }}/out/tools/patch_linux
 
     steps:
       - name: Checkout source and submodules
@@ -163,18 +162,10 @@ jobs:
             flex fuse3 git kmod libelf-dev libncurses-dev \
             libssl-dev libyaml-dev lld perl python3 rsync unzip zip
 
-      - name: Fetch KPM patcher and AnyKernel3
+      - name: Fetch AnyKernel3
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p out/tools
-          curl -fL --retry 3 --connect-timeout 15 --max-time 180 \
-            https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/main/kpm/patch_linux \
-            -o "$KPM_PATCHER"
-          echo '1bd00563e9d8fbbd11a16c0c1c59c5add406e6c5c92557def50f93d6f0aebe2d  out/tools/patch_linux' \
-            | sha256sum --check
-          chmod 755 "$KPM_PATCHER"
-          file "$KPM_PATCHER"
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git "$ANYKERNEL_DIR"
           test -f "$ANYKERNEL_DIR/anykernel.sh"
 
@@ -192,8 +183,7 @@ jobs:
             "${KERNEL_PREFIX}_OUTPUT_DIR=$RELEASE_DIR" \
             SOCKO_TEMPLATE="$SOCKO_TEMPLATE" \
             ANYKERNEL_DIR="$ANYKERNEL_DIR" \
-            KPM_PATCHER="$KPM_PATCHER" \
-            JOBS="$(nproc)" \
+              JOBS="$(nproc)" \
             "$BUILD_SCRIPT" all 2>&1 | tee out/build.log
           test "${PIPESTATUS[0]}" -eq 0
 
